@@ -1,7 +1,7 @@
 [project]
 name = global_ncp_change_analysis
-default_workdir = ./work
-output_dir = ./output
+global_work_dir = ./workdir
+global_output_dir = ./output
 log_level = INFO
 
 [job:country]
@@ -9,4 +9,4 @@ agg_vector = ./jeronimodata/vector_basedata/cartographic_ee_ee_r264_corresponden
 agg_field = nev_name
 operations = avg,stdev,valid_count,total_count,p5,p95
 row_col_order=agg_field,raster_base
-raster_base=./Spring/Inspring/*.tif,./jeronimodata/change_calc/*.tif
+base_raster=./Spring/Inspring/*.tif,./jeronimodata/change_calc/*.tif
