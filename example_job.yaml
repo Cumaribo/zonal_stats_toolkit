@@ -1,0 +1,28 @@
+[project]
+name = example_job
+default_workdir = ./work
+log_level = INFO
+
+[job:poverty_region]
+agg_vector = ./vectors/countries.gpkg
+agg_layer = countries
+agg_field = poverty_region
+workdir = ./work/poverty_region
+output_csv = ./out/poverty_region.csv
+operations = avg,stdev,count
+
+[job:admin1_by_state]
+agg_vector = ./vectors/admin1.gpkg
+agg_layer = admin1
+agg_field = state_name
+workdir = ./work/admin1_by_state
+output_csv = ./out/admin1_by_state.csv
+operations = avg,stdev,count
+
+[job:watersheds]
+agg_vector = ./vectors/watersheds.gpkg
+agg_layer = basins
+agg_field = basin_id
+workdir = ./work/watersheds
+output_csv = ./out/watersheds.csv
+operations = avg,stdev,count
