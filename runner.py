@@ -1,30 +1,25 @@
 from __future__ import annotations
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import argparse
+import collections
 import configparser
 import csv
 import logging
-import math
+import os
+import shutil
+import tempfile
+import time
 
-from ecoshard import taskgraph
-from pyproj import CRS, Transformer
-from rasterio.features import rasterize
-from shapely.geometry import shape, mapping
-from shapely.ops import transform as shapely_transform
-from tqdm.auto import tqdm
+from ecoshard import taskgraph, geoprocessing
+from osgeo import gdal, ogr, osr
 import fiona
 import numpy as np
-import rasterio
-from shapely.geometry import box
-from shapely.strtree import STRtree
-from rasterio.windows import bounds as window_bounds, Window
-from shapely import make_valid
+import shapely
 
 logger = logging.getLogger(__name__)
 
-
+_LOGGING_PERIOD = 10.0
 VALID_OPERATIONS = {
     "avg",
     "stdev",
@@ -43,121 +38,50 @@ VALID_OPERATIONS = {
 }
 
 
-def collect_zone_arrays_windowed(
-    raster_dataset,
-    shapes_with_zone_ids: list[tuple[dict, int]],
-    raster_nodata_value,
-):
-    shapely_geometries = [
-        shape(geom_mapping) for geom_mapping, _ in shapes_with_zone_ids
-    ]
-    zone_id_list = [zone_id for _, zone_id in shapes_with_zone_ids]
-    spatial_index = STRtree(shapely_geometries)
+def _make_logger_callback(message):
+    """Build a timed logger callback that prints ``message`` replaced.
 
-    all_zone_ids_list: list[np.ndarray] = []
-    valid_zone_ids_list: list[np.ndarray] = []
-    valid_raster_values_list: list[np.ndarray] = []
+    Args:
+        message (string): a string that expects 2 placement %% variables,
+            first for % complete from ``df_complete``, second from
+            ``p_progress_arg[0]``.
 
-    shapely_geometries = [make_valid(g) for g in shapely_geometries]
-    shapes_mappings = [mapping(g) for g in shapely_geometries]
-    block_h, block_w = raster_dataset.block_shapes[0]
-    H, W = raster_dataset.height, raster_dataset.width
+    Return:
+        Function with signature:
+            logger_callback(df_complete, psz_message, p_progress_arg)
 
-    block_rows = 10
-    block_cols = 10
+    """
 
-    step_h = block_h * block_rows
-    step_w = block_w * block_cols
-
-    total_windows = ((H + step_h - 1) // step_h) * ((W + step_w - 1) // step_w)
-    pbar = tqdm(total=total_windows, desc="raster windows")
-    for row_off in range(0, H, step_h):
-        for col_off in range(0, W, step_w):
-            h = min(step_h, H - row_off)
-            w = min(step_w, W - col_off)
-            window = Window(col_off=col_off, row_off=row_off, width=w, height=h)
-
-            window_transform = rasterio.windows.transform(
-                window, raster_dataset.transform
-            )
-            window_minx, window_miny, window_maxx, window_maxy = window_bounds(
-                window, raster_dataset.transform
-            )
-            window_bbox = box(window_minx, window_miny, window_maxx, window_maxy)
-
-            candidate_indexes = spatial_index.query(window_bbox)
-            if candidate_indexes is None or len(candidate_indexes) == 0:
-                pbar.update(1)
-                continue
-
-            candidate_shapes = []
-            for i in candidate_indexes:
-                if shapely_geometries[i].intersects(window_bbox):
-                    candidate_shapes.append((shapes_mappings[i], zone_id_list[i]))
-
-            if not candidate_shapes:
-                pbar.update(1)
-                continue
-
-            zone_id_window = rasterize(
-                shapes=candidate_shapes,
-                out_shape=(int(window.height), int(window.width)),
-                transform=window_transform,
-                fill=0,
-                dtype="int32",
-                all_touched=False,
+    def logger_callback(df_complete, _, p_progress_arg):
+        """Argument names come from the GDAL API for callbacks."""
+        try:
+            current_time = time.time()
+            if (current_time - logger_callback.last_time) > 5.0 or (
+                df_complete == 1.0 and logger_callback.total_time >= 5.0
+            ):
+                # In some multiprocess applications I was encountering a
+                # ``p_progress_arg`` of None. This is unexpected and I suspect
+                # was an issue for some kind of GDAL race condition. So I'm
+                # guarding against it here and reporting an appropriate log
+                # if it occurs.
+                if p_progress_arg:
+                    logger.info(message, df_complete * 100, p_progress_arg[0])
+                else:
+                    logger.info(message, df_complete * 100, "")
+                logger_callback.last_time = current_time
+                logger_callback.total_time += current_time
+        except AttributeError:
+            logger_callback.last_time = time.time()
+            logger_callback.total_time = 0.0
+        except Exception:
+            logger.exception(
+                "Unhandled error occurred while logging "
+                "progress.  df_complete: %s, p_progress_arg: %s",
+                df_complete,
+                p_progress_arg,
             )
 
-            zone_pixel_mask = zone_id_window > 0
-            if not np.any(zone_pixel_mask):
-                pbar.update(1)
-                continue
-
-            raster_window_values = raster_dataset.read(1, window=window)
-
-            all_zone_ids_list.append(
-                zone_id_window[zone_pixel_mask].astype(np.int64, copy=False)
-            )
-
-            if raster_nodata_value is None:
-                valid_mask = zone_pixel_mask
-            else:
-                valid_mask = zone_pixel_mask & (
-                    raster_window_values != raster_nodata_value
-                )
-
-            if np.any(valid_mask):
-                valid_zone_ids_list.append(
-                    zone_id_window[valid_mask].astype(np.int64, copy=False)
-                )
-                valid_raster_values_list.append(
-                    raster_window_values[valid_mask].astype(np.float64, copy=False)
-                )
-            pbar.update(1)
-
-    all_zone_ids = (
-        np.concatenate(all_zone_ids_list)
-        if all_zone_ids_list
-        else np.array([], dtype=np.int64)
-    )
-    valid_zone_ids = (
-        np.concatenate(valid_zone_ids_list)
-        if valid_zone_ids_list
-        else np.array([], dtype=np.int64)
-    )
-    valid_raster_values = (
-        np.concatenate(valid_raster_values_list)
-        if valid_raster_values_list
-        else np.array([], dtype=np.float64)
-    )
-
-    logger.info(
-        "windowed rasterization done: total_zoned_pixels=%d, valid_zoned_pixels=%d",
-        int(all_zone_ids.size),
-        int(valid_zone_ids.size),
-    )
-
-    return all_zone_ids, valid_zone_ids, valid_raster_values
+    return logger_callback
 
 
 def parse_and_validate_config(cfg_path: Path) -> dict:
@@ -247,11 +171,15 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
         if not agg_vector:
             raise ValueError(f"[job:{tag}] missing agg_vector")
         if not agg_vector.exists():
-            raise FileNotFoundError(f"[job:{tag}] agg_vector not found: {agg_vector}")
+            raise FileNotFoundError(
+                f"[job:{tag}] agg_vector not found: {agg_vector}"
+            )
 
         base_raster_pattern = job.get("base_raster_pattern", "").strip()
         if base_raster_pattern in [None, ""]:
-            raise FileNotFoundError(f"[job:{tag}] base_raster_pattern tag not found")
+            raise FileNotFoundError(
+                f"[job:{tag}] base_raster_pattern tag not found"
+            )
         base_raster_path_list = [
             path
             for pattern in base_raster_pattern.split(",")
@@ -270,7 +198,9 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
         ops_raw = job.get("operations", "").strip()
         if not ops_raw:
             raise ValueError(f"[job:{tag}] missing operations")
-        operations = [o.strip().lower() for o in ops_raw.split(",") if o.strip()]
+        operations = [
+            o.strip().lower() for o in ops_raw.split(",") if o.strip()
+        ]
         if not operations:
             raise ValueError(f"[job:{tag}] operations is empty")
 
@@ -331,195 +261,568 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
     }
 
 
-def _collect_valid_zone_values_for_raster(
-    raster_path: Path,
-    agg_vector: Path,
-    agg_layer: str,
-    agg_field: str,
-    zone_value_to_zone_id: dict[str, int],
-    zone_id_to_zone_value: dict[int, str],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    logger = logging.getLogger(__name__)
-    logger.info("opening raster %s", raster_path)
-    with rasterio.open(raster_path) as raster_dataset:
-        raster_band_array = raster_dataset.read(1)
-        raster_transform = raster_dataset.transform
-        raster_nodata_value = raster_dataset.nodata
-        raster_crs = raster_dataset.crs
-
-    pixel_width = abs(raster_transform.a)
-    pixel_height = abs(raster_transform.e)
-    geometry_simplify_tolerance = 0.5 * max(pixel_width, pixel_height)
+def fast_zonal_statistics(
+    base_raster_path_band,
+    aggregate_vector_path,
+    aggregate_vector_field,
+    aggregate_layer_name=None,
+    ignore_nodata=True,
+    polygons_might_overlap=True,
+    working_dir=None,
+    clean_working_dir=True,
+):
     logger.info(
-        "raster loaded (width=%d, height=%d, nodata=%s, simplify_tol=%f)",
-        raster_band_array.shape[1],
-        raster_band_array.shape[0],
-        str(raster_nodata_value),
-        geometry_simplify_tolerance,
+        "fast_zonal_statistics start | raster=%s band=%s | vector=%s layer=%s field=%s | ignore_nodata=%s overlap=%s | working_dir=%s clean=%s",
+        base_raster_path_band[0],
+        base_raster_path_band[1],
+        str(aggregate_vector_path),
+        aggregate_layer_name,
+        aggregate_vector_field,
+        ignore_nodata,
+        polygons_might_overlap,
+        working_dir,
+        clean_working_dir,
     )
 
-    shapes_with_zone_ids: list[tuple[dict, int]] = []
+    raster_info = geoprocessing.get_raster_info(base_raster_path_band[0])
+    raster_nodata = raster_info["nodata"][base_raster_path_band[1] - 1]
+    pixel_width = abs(raster_info["pixel_size"][0])
+    tolerance = pixel_width * 0.5
 
-    logger.info("opening vector %s (layer=%s)", agg_vector, agg_layer or "<first>")
-    with fiona.open(agg_vector, layer=agg_layer) as vector_layer:
-        vector_layer_crs = None
-        if vector_layer.crs_wkt:
-            vector_layer_crs = CRS.from_wkt(vector_layer.crs_wkt)
-        elif vector_layer.crs:
-            vector_layer_crs = CRS.from_user_input(vector_layer.crs)
+    logger.info(
+        "raster loaded | nodata=%s | pixel_size=%s | bbox=%s",
+        raster_nodata,
+        raster_info["pixel_size"],
+        raster_info["bounding_box"],
+    )
 
-        raster_dataset_crs = CRS.from_user_input(raster_crs) if raster_crs else None
+    raster_srs = osr.SpatialReference()
+    raster_srs.ImportFromWkt(raster_info["projection_wkt"])
+    raster_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
-        geometry_transformer = None
-        if (
-            vector_layer_crs
-            and raster_dataset_crs
-            and vector_layer_crs != raster_dataset_crs
-        ):
-            logger.info(
-                "reprojecting vector from %s to %s",
-                vector_layer_crs.to_string(),
-                raster_dataset_crs.to_string(),
-            )
-            geometry_transformer = Transformer.from_crs(
-                vector_layer_crs,
-                raster_dataset_crs,
-                always_xy=True,
-            )
-        else:
-            logger.info("no reprojection needed (vector and raster CRS compatible)")
-
-        def reproject_xy(x, y, z=None):
-            return geometry_transformer.transform(x, y)
-
-        feature_count = 0
-        used_feature_count = 0
-        features = list(vector_layer)
-
-        feature_records: list[tuple[int, dict, int]] = []
-
-        feature_count = 0
-        for feature in features:
-            feature_count += 1
-
-            feature_properties = feature.get("properties") or {}
-            zone_value = feature_properties.get(agg_field)
-            if zone_value is None:
-                logger.debug(
-                    'feature %d skipped: missing agg_field "%s"',
-                    feature_count,
-                    agg_field,
-                )
-                continue
-
-            zone_value_string = str(zone_value)
-            zone_id = zone_value_to_zone_id.get(zone_value_string)
-            if zone_id is None:
-                zone_id = len(zone_value_to_zone_id) + 1
-                zone_value_to_zone_id[zone_value_string] = zone_id
-                zone_id_to_zone_value[zone_id] = zone_value_string
-                logger.debug(
-                    'created new zone_id=%d for value="%s"',
-                    zone_id,
-                    zone_value_string,
-                )
-
-            feature_geometry = feature.get("geometry")
-            if not feature_geometry:
-                logger.debug(
-                    "feature %d (zone_id=%d) skipped: no geometry",
-                    feature_count,
-                    zone_id,
-                )
-                continue
-
-            feature_records.append((feature_count, feature_geometry, zone_id))
-
-        logger.info(
-            "dispatching %d features to thread pool for reprojection/simplify",
-            len(feature_records),
+    logger.info("opening source vector: %s", str(aggregate_vector_path))
+    src_vector = gdal.OpenEx(str(aggregate_vector_path), gdal.OF_VECTOR)
+    if src_vector is None:
+        raise RuntimeError(
+            "Could not open aggregate vector at %s" % str(aggregate_vector_path)
         )
 
-        shapes_with_zone_ids: list[tuple[dict, int]] = []
-        used_feature_count = 0
+    if aggregate_layer_name is not None:
+        logger.info("selecting vector layer by name: %s", aggregate_layer_name)
+        src_layer = src_vector.GetLayerByName(aggregate_layer_name)
+    else:
+        logger.info("selecting default vector layer")
+        src_layer = src_vector.GetLayer()
 
-        def process_record(
-            record: tuple[int, dict, int],
-        ) -> tuple[int, dict, int] | None:
-            record_index, feature_geometry, zone_id = record
-            shapely_geometry = shape(feature_geometry)
+    if src_layer is None:
+        raise RuntimeError(
+            "Could not open layer %s on %s"
+            % (aggregate_layer_name, str(aggregate_vector_path))
+        )
 
-            if geometry_transformer is not None:
-                shapely_geometry = shapely_transform(reproject_xy, shapely_geometry)
+    src_srs = src_layer.GetSpatialRef()
+    needs_reproject = True
+    if src_srs is not None:
+        src_srs = src_srs.Clone()
+        src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        needs_reproject = not src_srs.IsSame(raster_srs)
+        logger.info("vector SRS detected | needs_reproject=%s", needs_reproject)
+    else:
+        logger.info(
+            "vector SRS missing/unknown | forcing reprojection to raster SRS"
+        )
 
-            shapely_geometry = shapely_geometry.simplify(
-                geometry_simplify_tolerance,
-                preserve_topology=True,
+    temp_working_dir = tempfile.mkdtemp(dir=working_dir)
+    projected_vector_path = os.path.join(
+        temp_working_dir, "projected_vector.gpkg"
+    )
+    logger.info("created temp working dir: %s", temp_working_dir)
+
+    translate_kwargs = {
+        "simplifyTolerance": tolerance,
+        "format": "GPKG",
+    }
+    if needs_reproject:
+        translate_kwargs["dstSRS"] = raster_info["projection_wkt"]
+
+    logger.info(
+        "vector translate start | output=%s | simplifyTolerance=%s | reproject=%s",
+        projected_vector_path,
+        tolerance,
+        needs_reproject,
+    )
+    gdal.VectorTranslate(
+        projected_vector_path, str(aggregate_vector_path), **translate_kwargs
+    )
+    logger.info("vector translate done | output=%s", projected_vector_path)
+
+    src_layer = None
+    src_vector = None
+
+    logger.info("opening projected vector: %s", projected_vector_path)
+    aggregate_vector = gdal.OpenEx(projected_vector_path, gdal.OF_VECTOR)
+    if aggregate_vector is None:
+        raise RuntimeError(
+            "Could not open aggregate vector at %s" % projected_vector_path
+        )
+
+    if aggregate_layer_name is not None:
+        aggregate_layer = aggregate_vector.GetLayerByName(aggregate_layer_name)
+    else:
+        aggregate_layer = aggregate_vector.GetLayer()
+
+    if aggregate_layer is None:
+        raise RuntimeError(
+            "Could not open layer %s on %s"
+            % (aggregate_layer_name, projected_vector_path)
+        )
+
+    logger.info(
+        "scanning vector for grouping field values: %s", aggregate_vector_field
+    )
+    aggregate_layer_fid_set = set()
+    fid_to_group_value = {}
+    unique_group_values = set()
+    aggregate_layer.ResetReading()
+    for feat in aggregate_layer:
+        fid = feat.GetFID()
+        group_value = feat.GetField(aggregate_vector_field)
+        aggregate_layer_fid_set.add(fid)
+        fid_to_group_value[fid] = group_value
+        unique_group_values.add(group_value)
+    aggregate_layer.ResetReading()
+    logger.info(
+        "vector scan done | features=%d | unique %s=%d",
+        len(aggregate_layer_fid_set),
+        aggregate_vector_field,
+        len(unique_group_values),
+    )
+
+    raster_bbox = raster_info["bounding_box"]
+    vec_extent = aggregate_layer.GetExtent()
+    logger.info(
+        "extent check | raster_bbox=%s | vector_extent=%s",
+        raster_bbox,
+        vec_extent,
+    )
+
+    v_minx, v_maxx, v_miny, v_maxy = vec_extent
+    r_minx, r_miny, r_maxx, r_maxy = raster_bbox  # <- [minx, miny, maxx, maxy]
+
+    no_intersection = (
+        v_maxx < r_minx or v_minx > r_maxx or v_maxy < r_miny or v_miny > r_maxy
+    )
+
+    if no_intersection:
+        logger.error(
+            f"aggregate vector {aggregate_vector_path} does not intersect with "
+            f"the raster {base_raster_path_band[0]}: vector extent {vec_extent} vs raster bounding box {raster_bbox}\n"
+            f"extent intersection check:\n"
+            f"  expr: vec_extent[1] < raster_bbox[0] or vec_extent[0] > raster_bbox[1] or vec_extent[3] < raster_bbox[2] or vec_extent[2] > raster_bbox[3]\n"
+            f"  values: {vec_extent[1]} < {raster_bbox[0]} or {vec_extent[0]} > {raster_bbox[1]} or {vec_extent[3]} < {raster_bbox[2]} or {vec_extent[2]} > {raster_bbox[3]}\n"
+            f"  result: {(vec_extent[1] < raster_bbox[0]) or (vec_extent[0] > raster_bbox[1]) or (vec_extent[3] < raster_bbox[2]) or (vec_extent[2] > raster_bbox[3])}\n"
+            f"  vec_extent=(minx={vec_extent[0]}, maxx={vec_extent[1]}, miny={vec_extent[2]}, maxy={vec_extent[3]})\n"
+            f"  raster_bbox=(minx={raster_bbox[0]}, maxx={raster_bbox[1]}, miny={raster_bbox[2]}, maxy={raster_bbox[3]})"
+        )
+        group_stats = collections.defaultdict(
+            lambda: {
+                "min": None,
+                "max": None,
+                "count": 0,
+                "nodata_count": 0,
+                "sum": 0.0,
+            }
+        )
+        for group_value in unique_group_values:
+            _ = group_stats[group_value]
+        logger.info(
+            "returning empty stats for %d groups (no intersection)",
+            len(unique_group_values),
+        )
+        if clean_working_dir:
+            logger.info("cleaning temp working dir: %s", temp_working_dir)
+            shutil.rmtree(temp_working_dir)
+        return dict(group_stats)
+
+    clipped_raster_path = base_raster_path_band[0]
+    logger.info("opening raster for read: %s", clipped_raster_path)
+    clipped_raster = gdal.OpenEx(clipped_raster_path, gdal.OF_RASTER)
+    clipped_band = clipped_raster.GetRasterBand(base_raster_path_band[1])
+    logger.info(
+        "raster opened | size=%dx%d | band=%d",
+        clipped_band.XSize,
+        clipped_band.YSize,
+        base_raster_path_band[1],
+    )
+
+    local_aggregate_field_name = "original_fid"
+    rasterize_layer_args = {
+        "options": [
+            "ALL_TOUCHED=FALSE",
+            "ATTRIBUTE=%s" % local_aggregate_field_name,
+        ]
+    }
+
+    driver = ogr.GetDriverByName("MEMORY")
+    disjoint_vector = driver.CreateDataSource("disjoint_vector")
+    spat_ref = aggregate_layer.GetSpatialRef()
+
+    logger.info(
+        "building disjoint polygon sets | polygons_might_overlap=%s",
+        polygons_might_overlap,
+    )
+    if polygons_might_overlap:
+        disjoint_fid_sets = geoprocessing.calculate_disjoint_polygon_set(
+            projected_vector_path, bounding_box=raster_bbox
+        )
+    else:
+        disjoint_fid_sets = [aggregate_layer_fid_set]
+    logger.info(
+        "disjoint sets ready | sets=%d | total_features=%d",
+        len(disjoint_fid_sets),
+        len(aggregate_layer_fid_set),
+    )
+
+    aggregate_stats = collections.defaultdict(
+        lambda: {
+            "min": None,
+            "max": None,
+            "count": 0,
+            "nodata_count": 0,
+            "sum": 0.0,
+        }
+    )
+
+    last_time = time.time()
+    logger.info("processing %d disjoint polygon sets", len(disjoint_fid_sets))
+    for set_index, disjoint_fid_set in enumerate(disjoint_fid_sets):
+        logger.info(
+            "set %d/%d start | polygons_in_set=%d",
+            set_index + 1,
+            len(disjoint_fid_sets),
+            len(disjoint_fid_set),
+        )
+
+        last_time = _invoke_timed_callback(
+            last_time,
+            lambda: logger.info(
+                "zonal stats approximately %.1f%% complete on %s",
+                100.0 * float(set_index + 1) / len(disjoint_fid_sets),
+                os.path.basename(projected_vector_path),
+            ),
+            _LOGGING_PERIOD,
+        )
+
+        agg_fid_raster_path = os.path.join(
+            temp_working_dir, f"agg_fid_{set_index}.tif"
+        )
+        agg_fid_nodata = -1
+        logger.info("creating agg fid raster: %s", agg_fid_raster_path)
+        geoprocessing.new_raster_from_base(
+            clipped_raster_path,
+            agg_fid_raster_path,
+            gdal.GDT_Int32,
+            [agg_fid_nodata],
+        )
+
+        agg_fid_offset_list = list(
+            geoprocessing.iterblocks((agg_fid_raster_path, 1), offset_only=True)
+        )
+        logger.info("iterblocks prepared | blocks=%d", len(agg_fid_offset_list))
+
+        agg_fid_raster = gdal.OpenEx(
+            agg_fid_raster_path, gdal.GA_Update | gdal.OF_RASTER
+        )
+        agg_fid_band = agg_fid_raster.GetRasterBand(1)
+
+        disjoint_layer = disjoint_vector.CreateLayer(
+            "disjoint_vector", spat_ref, ogr.wkbPolygon
+        )
+        disjoint_layer.CreateField(
+            ogr.FieldDefn(local_aggregate_field_name, ogr.OFTInteger)
+        )
+        disjoint_layer_defn = disjoint_layer.GetLayerDefn()
+
+        logger.info("populating disjoint layer features (transaction start)")
+        disjoint_layer.StartTransaction()
+        for index, feature_fid in enumerate(disjoint_fid_set):
+            last_time = _invoke_timed_callback(
+                last_time,
+                lambda i=index: logger.info(
+                    "polygon set %d/%d approximately %.1f%% processed on %s",
+                    set_index + 1,
+                    len(disjoint_fid_sets),
+                    100.0 * float(i + 1) / len(disjoint_fid_set),
+                    os.path.basename(projected_vector_path),
+                ),
+                _LOGGING_PERIOD,
+            )
+            agg_feat = aggregate_layer.GetFeature(feature_fid)
+            agg_geom_ref = agg_feat.GetGeometryRef()
+            disjoint_feat = ogr.Feature(disjoint_layer_defn)
+            disjoint_feat.SetGeometry(agg_geom_ref.Clone())
+            agg_geom_ref = None
+            disjoint_feat.SetField(local_aggregate_field_name, feature_fid)
+            disjoint_layer.CreateFeature(disjoint_feat)
+
+        agg_feat = None
+        disjoint_layer.CommitTransaction()
+        logger.info(
+            "populating disjoint layer features done (transaction commit)"
+        )
+
+        rasterize_callback = _make_logger_callback(
+            "rasterizing polygon "
+            + str(set_index + 1)
+            + " of "
+            + str(len(disjoint_fid_set))
+            + " set %.1f%% complete %s"
+        )
+
+        logger.info(
+            "rasterize start | set %d/%d", set_index + 1, len(disjoint_fid_sets)
+        )
+        gdal.RasterizeLayer(
+            agg_fid_raster,
+            [1],
+            disjoint_layer,
+            callback=rasterize_callback,
+            **rasterize_layer_args,
+        )
+        agg_fid_raster.FlushCache()
+        logger.info(
+            "rasterize done | set %d/%d", set_index + 1, len(disjoint_fid_sets)
+        )
+
+        disjoint_layer = None
+        disjoint_vector.DeleteLayer(0)
+
+        logger.info(
+            "gathering stats from raster blocks | set %d/%d",
+            set_index + 1,
+            len(disjoint_fid_sets),
+        )
+        block_last_time = time.time()
+        for block_index, agg_fid_offset in enumerate(agg_fid_offset_list):
+            block_last_time = _invoke_timed_callback(
+                block_last_time,
+                lambda bi=block_index: logger.info(
+                    "block processing | set %d/%d | %.1f%% (%d/%d blocks)",
+                    set_index + 1,
+                    len(disjoint_fid_sets),
+                    100.0 * float(bi + 1) / len(agg_fid_offset_list),
+                    bi + 1,
+                    len(agg_fid_offset_list),
+                ),
+                _LOGGING_PERIOD,
             )
 
-            if shapely_geometry.is_empty:
-                logger.debug(
-                    "feature %d (zone_id=%d) skipped: geometry empty after simplify",
-                    record_index,
-                    zone_id,
+            agg_fid_block = agg_fid_band.ReadAsArray(**agg_fid_offset)
+            clipped_block = clipped_band.ReadAsArray(**agg_fid_offset)
+            valid_mask = agg_fid_block != agg_fid_nodata
+            valid_agg_fids = agg_fid_block[valid_mask]
+            valid_clipped = clipped_block[valid_mask]
+            for agg_fid in np.unique(valid_agg_fids):
+                masked_clipped_block = valid_clipped[valid_agg_fids == agg_fid]
+                if raster_nodata is not None:
+                    clipped_nodata_mask = np.isclose(
+                        masked_clipped_block, raster_nodata
+                    )
+                else:
+                    clipped_nodata_mask = np.zeros(
+                        masked_clipped_block.shape, dtype=bool
+                    )
+
+                aggregate_stats[agg_fid]["nodata_count"] += np.count_nonzero(
+                    clipped_nodata_mask
                 )
-                return None
 
-            return record_index, mapping(shapely_geometry), zone_id
-
-        with ThreadPoolExecutor(max_workers=64) as executor:
-            futures = [
-                executor.submit(process_record, record) for record in feature_records
-            ]
-            for future in tqdm(
-                as_completed(futures),
-                total=len(futures),
-                desc="simplifying geometries",
-            ):
-                result = future.result()
-                if result is None:
+                if ignore_nodata:
+                    masked_clipped_block = masked_clipped_block[
+                        ~clipped_nodata_mask
+                    ]
+                if masked_clipped_block.size == 0:
                     continue
-                record_index, mapped_geometry, zone_id = result
-                shapes_with_zone_ids.append((mapped_geometry, zone_id))
-                used_feature_count += 1
+
+                if aggregate_stats[agg_fid]["min"] is None:
+                    aggregate_stats[agg_fid]["min"] = masked_clipped_block[0]
+                    aggregate_stats[agg_fid]["max"] = masked_clipped_block[0]
+
+                aggregate_stats[agg_fid]["min"] = min(
+                    np.min(masked_clipped_block),
+                    aggregate_stats[agg_fid]["min"],
+                )
+                aggregate_stats[agg_fid]["max"] = max(
+                    np.max(masked_clipped_block),
+                    aggregate_stats[agg_fid]["max"],
+                )
+                aggregate_stats[agg_fid]["count"] += masked_clipped_block.size
+                aggregate_stats[agg_fid]["sum"] += np.sum(masked_clipped_block)
 
         logger.info(
-            "vector processing complete: %d features read, %d geometries used after simplify",
-            feature_count,
-            used_feature_count,
+            "set %d/%d done | fids_with_any_stats_so_far=%d",
+            set_index + 1,
+            len(disjoint_fid_sets),
+            len(aggregate_stats),
         )
+
+        agg_fid_band = None
+        agg_fid_raster = None
+
+    unset_fids = aggregate_layer_fid_set.difference(aggregate_stats)
+    logger.info("unset fid pass start | unset_fids=%d", len(unset_fids))
+
+    clipped_gt = np.array(clipped_raster.GetGeoTransform(), dtype=np.float32)
+    for unset_fid in unset_fids:
+        unset_feat = aggregate_layer.GetFeature(unset_fid)
+        unset_geom_ref = unset_feat.GetGeometryRef()
+        if unset_geom_ref is None:
+            logger.warning(
+                "no geometry in %s FID: %s", projected_vector_path, unset_fid
+            )
+            continue
+
+        shapely_geom = shapely.wkb.loads(bytes(unset_geom_ref.ExportToWkb()))
+        try:
+            shapely_geom_list = list(shapely_geom)
+        except TypeError:
+            shapely_geom_list = [shapely_geom]
+        unset_geom_ref = None
+
+        for shapely_geom in shapely_geom_list:
+            single_geom = ogr.CreateGeometryFromWkt(shapely_geom.wkt)
+            unset_geom_envelope = list(single_geom.GetEnvelope())
+            single_geom = None
+
+            if clipped_gt[1] < 0:
+                unset_geom_envelope[0], unset_geom_envelope[1] = (
+                    unset_geom_envelope[1],
+                    unset_geom_envelope[0],
+                )
+            if clipped_gt[5] < 0:
+                unset_geom_envelope[2], unset_geom_envelope[3] = (
+                    unset_geom_envelope[3],
+                    unset_geom_envelope[2],
+                )
+
+            xoff = int((unset_geom_envelope[0] - clipped_gt[0]) / clipped_gt[1])
+            yoff = int((unset_geom_envelope[2] - clipped_gt[3]) / clipped_gt[5])
+            win_xsize = (
+                int(
+                    np.ceil(
+                        (unset_geom_envelope[1] - clipped_gt[0]) / clipped_gt[1]
+                    )
+                )
+                - xoff
+            )
+            win_ysize = (
+                int(
+                    np.ceil(
+                        (unset_geom_envelope[3] - clipped_gt[3]) / clipped_gt[5]
+                    )
+                )
+                - yoff
+            )
+
+            if xoff < 0:
+                win_xsize += xoff
+                xoff = 0
+            if yoff < 0:
+                win_ysize += yoff
+                yoff = 0
+            if xoff + win_xsize > clipped_band.XSize:
+                win_xsize = clipped_band.XSize - xoff
+            if yoff + win_ysize > clipped_band.YSize:
+                win_ysize = clipped_band.YSize - yoff
+            if win_xsize <= 0 or win_ysize <= 0:
+                continue
+
+            unset_fid_block = clipped_band.ReadAsArray(
+                xoff=xoff, yoff=yoff, win_xsize=win_xsize, win_ysize=win_ysize
+            )
+
+            if raster_nodata is not None:
+                unset_fid_nodata_mask = np.isclose(
+                    unset_fid_block, raster_nodata
+                )
+            else:
+                unset_fid_nodata_mask = np.zeros(
+                    unset_fid_block.shape, dtype=bool
+                )
+
+            valid_unset_fid_block = unset_fid_block[~unset_fid_nodata_mask]
+            if valid_unset_fid_block.size == 0:
+                aggregate_stats[unset_fid]["min"] = 0.0
+                aggregate_stats[unset_fid]["max"] = 0.0
+                aggregate_stats[unset_fid]["sum"] = 0.0
+            else:
+                aggregate_stats[unset_fid]["min"] = np.min(
+                    valid_unset_fid_block
+                )
+                aggregate_stats[unset_fid]["max"] = np.max(
+                    valid_unset_fid_block
+                )
+                aggregate_stats[unset_fid]["sum"] = np.sum(
+                    valid_unset_fid_block
+                )
+
+            aggregate_stats[unset_fid]["count"] = valid_unset_fid_block.size
+            aggregate_stats[unset_fid]["nodata_count"] = np.count_nonzero(
+                unset_fid_nodata_mask
+            )
+
+    unset_fids = aggregate_layer_fid_set.difference(aggregate_stats)
+    for fid in unset_fids:
+        _ = aggregate_stats[fid]
 
     logger.info(
-        "vector processed: %d features read, %d geometries used after simplify",
-        feature_count,
-        used_feature_count,
+        "unset fid pass done | remaining_unset=%d | total_fids=%d",
+        len(unset_fids),
+        len(aggregate_layer_fid_set),
     )
 
-    if not shapes_with_zone_ids:
-        logger.info("no geometries to rasterize; returning empty arrays")
-        return (
-            np.array([], dtype=np.int64),
-            np.array([], dtype=np.int64),
-            np.array([], dtype=np.float64),
-        )
+    spat_ref = None
+    clipped_band = None
+    clipped_raster = None
+    disjoint_layer = None
+    disjoint_vector = None
+    aggregate_layer = None
+    aggregate_vector = None
 
-    logger.info(
-        "rasterizing %d geometries to zone-id raster", len(shapes_with_zone_ids)
+    logger.info("grouping fid stats -> %s values", aggregate_vector_field)
+    grouped_stats = collections.defaultdict(
+        lambda: {
+            "min": None,
+            "max": None,
+            "count": 0,
+            "nodata_count": 0,
+            "sum": 0.0,
+        }
     )
 
-    with rasterio.open(raster_path) as raster_dataset:
-        raster_nodata_value = raster_dataset.nodata
-        (
-            all_zone_ids,
-            valid_zone_ids,
-            valid_raster_values,
-        ) = collect_zone_arrays_windowed(
-            raster_dataset,
-            shapes_with_zone_ids,
-            raster_nodata_value,
-        )
+    for fid in aggregate_layer_fid_set:
+        group_value = fid_to_group_value[fid]
+        fid_stats = aggregate_stats[fid]
+        g = grouped_stats[group_value]
+        g["count"] += fid_stats["count"]
+        g["nodata_count"] += fid_stats["nodata_count"]
+        g["sum"] += fid_stats["sum"]
+        if fid_stats["count"] > 0:
+            if g["min"] is None:
+                g["min"] = fid_stats["min"]
+                g["max"] = fid_stats["max"]
+            else:
+                g["min"] = min(g["min"], fid_stats["min"])
+                g["max"] = max(g["max"], fid_stats["max"])
 
-    return all_zone_ids, valid_zone_ids, valid_raster_values
+    logger.info("grouping done | groups=%d", len(grouped_stats))
+
+    if clean_working_dir:
+        logger.info("cleaning temp working dir: %s", temp_working_dir)
+        shutil.rmtree(temp_working_dir)
+
+    logger.info("fast_zonal_statistics done")
+    return dict(grouped_stats)
 
 
 def run_zonal_stats_job(
@@ -532,347 +835,112 @@ def run_zonal_stats_job(
     workdir: Path,
     tag: str,
     row_col_order: str,
-) -> None:
-    workdir.mkdir(parents=True, exist_ok=True)
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
+):
+    raster_stems = []
+    raster_stats_by_stem = {}
+    all_groups = set()
+    stat_fields = None
 
-    logger.info(
-        'starting zonal stats job "%s": %d rasters, vector=%s, layer=%s, field=%s, operations=%s',
-        tag,
-        len(base_raster_path_list),
-        agg_vector,
-        agg_layer or "<first>",
-        agg_field,
-        ",".join(operations),
-    )
-
-    if not base_raster_path_list:
-        logger.warning('no rasters provided for job "%s"; writing empty CSV', tag)
-
-    zone_value_to_zone_id: dict[str, int] = {}
-    zone_id_to_zone_value: dict[int, str] = {}
-
-    with fiona.open(agg_vector, layer=agg_layer) as vector_layer:
-        feature_count = 0
-        for feature in vector_layer:
-            feature_count += 1
-            feature_properties = feature.get("properties") or {}
-            zone_value = feature_properties.get(agg_field)
-            if zone_value is None:
-                continue
-            zone_value_string = str(zone_value)
-            if zone_value_string not in zone_value_to_zone_id:
-                zone_id = len(zone_value_to_zone_id) + 1
-                zone_value_to_zone_id[zone_value_string] = zone_id
-                zone_id_to_zone_value[zone_id] = zone_value_string
-        logger.info(
-            "built zone mapping from vector: %d features, %d unique zone values",
-            feature_count,
-            len(zone_value_to_zone_id),
-        )
-
-    per_zone_results: dict[int, dict[str, float]] = {}
-
-    normalized_operations = [
-        operation.strip().lower() for operation in operations if operation.strip()
-    ]
-    logger.info(
-        'normalized operations for "%s" = %s',
-        tag,
-        ",".join(normalized_operations),
-    )
-
-    percentile_operations: dict[str, int] = {}
-    for operation in normalized_operations:
-        if operation.startswith("p") and operation[1:].isdigit():
-            percentile_value = int(operation[1:])
-            if 0 <= percentile_value <= 100:
-                percentile_operations[operation] = percentile_value
-
-    def process_raster(
-        raster_path: Path,
-    ) -> tuple[str, np.ndarray, np.ndarray, np.ndarray]:
-        raster_stem = raster_path.stem
-        (
-            all_zone_ids,
-            valid_zone_ids,
-            valid_raster_values,
-        ) = _collect_valid_zone_values_for_raster(
-            raster_path,
-            agg_vector,
-            agg_layer,
+    for raster_path in base_raster_path_list:
+        stem = raster_path.stem
+        raster_stems.append(stem)
+        stats = fast_zonal_statistics(
+            (str(raster_path), 1),
+            str(agg_vector),
             agg_field,
-            zone_value_to_zone_id,
-            zone_id_to_zone_value,
+            aggregate_layer_name=agg_layer,
+            ignore_nodata=True,
+            polygons_might_overlap=False,
+            working_dir=str(workdir),
+            clean_working_dir=False,
         )
-        return raster_stem, all_zone_ids, valid_zone_ids, valid_raster_values
+        raster_stats_by_stem[stem] = stats
+        all_groups.update(stats.keys())
+        if stat_fields is None and stats:
+            stat_fields = list(next(iter(stats.values())).keys())
 
-    results: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
+    if stat_fields is None:
+        stat_fields = ["min", "max", "count", "nodata_count", "sum"]
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        futures = {
-            executor.submit(process_raster, raster_path): raster_path
-            for raster_path in base_raster_path_list
-        }
-        for future in tqdm(
-            as_completed(futures),
-            total=len(futures),
-            desc=f"processing rasters ({tag})",
-        ):
-            (
-                raster_stem,
-                all_zone_ids,
-                valid_zone_ids,
-                valid_raster_values,
-            ) = future.result()
-            results.append(
-                (raster_stem, all_zone_ids, valid_zone_ids, valid_raster_values)
-            )
-
-    for (
-        raster_stem,
-        all_zone_ids,
-        valid_zone_ids,
-        valid_raster_values,
-    ) in results:
-        logger.info(
-            "raster %s: total_zoned_pixels=%d, valid_zoned_pixels=%d",
-            raster_stem,
-            int(all_zone_ids.size),
-            int(valid_zone_ids.size),
-        )
-
-        if not all_zone_ids.size:
-            logger.info(
-                "raster %s contributed no zoned pixels, skipping stats",
-                raster_stem,
-            )
-            continue
-
-        current_max_zone_id = len(zone_value_to_zone_id)
-        total_zone_pixel_counts = np.bincount(
-            all_zone_ids,
-            minlength=current_max_zone_id + 1,
-        ).astype(np.int64, copy=False)
-
-        valid_zone_pixel_counts = np.bincount(
-            valid_zone_ids,
-            minlength=current_max_zone_id + 1,
-        ).astype(np.int64, copy=False)
-
-        per_zone_value_sums = np.bincount(
-            valid_zone_ids,
-            weights=valid_raster_values,
-            minlength=current_max_zone_id + 1,
-        ).astype(np.float64, copy=False)
-
-        for zone_id in range(1, current_max_zone_id + 1):
-            per_zone_results.setdefault(zone_id, {})
-
-        if "valid_count" in normalized_operations:
-            col_name = f"valid_count_{raster_stem}"
-            logger.info("computing %s", col_name)
-            for zone_id in range(1, current_max_zone_id + 1):
-                per_zone_results[zone_id][col_name] = float(
-                    valid_zone_pixel_counts[zone_id]
-                )
-
-        if "total_count" in normalized_operations:
-            col_name = f"total_count_{raster_stem}"
-            logger.info("computing %s", col_name)
-            for zone_id in range(1, current_max_zone_id + 1):
-                per_zone_results[zone_id][col_name] = float(
-                    total_zone_pixel_counts[zone_id]
-                )
-
-        if "sum" in normalized_operations:
-            col_name = f"sum_{raster_stem}"
-            logger.info("computing %s", col_name)
-            for zone_id in range(1, current_max_zone_id + 1):
-                per_zone_results[zone_id][col_name] = float(
-                    per_zone_value_sums[zone_id]
-                )
-
-        if "avg" in normalized_operations:
-            col_name = f"avg_{raster_stem}"
-            logger.info("computing %s", col_name)
-            for zone_id in range(1, current_max_zone_id + 1):
-                pixel_count = valid_zone_pixel_counts[zone_id]
-                per_zone_results[zone_id][col_name] = (
-                    float(per_zone_value_sums[zone_id] / pixel_count)
-                    if pixel_count
-                    else float("nan")
-                )
-
-        operations_requiring_per_zone_value_arrays = any(
-            operation in normalized_operations
-            for operation in ("min", "max", "stdev", "median")
-        ) or bool(percentile_operations)
-
-        if operations_requiring_per_zone_value_arrays and valid_zone_ids.size:
-            logger.info(
-                "building per-zone value arrays for high-order stats for %s",
-                raster_stem,
-            )
-            per_zone_value_arrays: dict[int, np.ndarray] = {}
-            for zone_id in range(1, current_max_zone_id + 1):
-                per_zone_value_arrays[zone_id] = valid_raster_values[
-                    valid_zone_ids == zone_id
-                ]
-
-            if "min" in normalized_operations:
-                col_name = f"min_{raster_stem}"
-                logger.info("computing %s", col_name)
-                for zone_id, zone_values in per_zone_value_arrays.items():
-                    per_zone_results[zone_id][col_name] = (
-                        float(np.min(zone_values)) if zone_values.size else float("nan")
-                    )
-
-            if "max" in normalized_operations:
-                col_name = f"max_{raster_stem}"
-                logger.info("computing %s", col_name)
-                for zone_id, zone_values in per_zone_value_arrays.items():
-                    per_zone_results[zone_id][col_name] = (
-                        float(np.max(zone_values)) if zone_values.size else float("nan")
-                    )
-
-            if "median" in normalized_operations:
-                col_name = f"median_{raster_stem}"
-                logger.info("computing %s", col_name)
-                for zone_id, zone_values in per_zone_value_arrays.items():
-                    per_zone_results[zone_id][col_name] = (
-                        float(np.median(zone_values))
-                        if zone_values.size
-                        else float("nan")
-                    )
-
-            if "stdev" in normalized_operations:
-                col_name = f"stdev_{raster_stem}"
-                logger.info("computing %s", col_name)
-                for zone_id, zone_values in per_zone_value_arrays.items():
-                    per_zone_results[zone_id][col_name] = (
-                        float(np.std(zone_values, ddof=0))
-                        if zone_values.size
-                        else float("nan")
-                    )
-
-            if percentile_operations:
-                logger.info(
-                    "computing percentile operations per zone for %s: %s",
-                    raster_stem,
-                    ",".join(
-                        f"{name}={value}"
-                        for name, value in percentile_operations.items()
-                    ),
-                )
-                for zone_id, zone_values in per_zone_value_arrays.items():
-                    if not zone_values.size:
-                        for percentile_operation in percentile_operations:
-                            col_name = f"{percentile_operation}_{raster_stem}"
-                            per_zone_results[zone_id][col_name] = float("nan")
-                        continue
-                    for (
-                        percentile_operation,
-                        percentile_value,
-                    ) in percentile_operations.items():
-                        col_name = f"{percentile_operation}_{raster_stem}"
-                        per_zone_results[zone_id][col_name] = float(
-                            np.percentile(zone_values, percentile_value)
-                        )
-
-    max_zone_id = len(zone_value_to_zone_id)
-    logger.debug("zone_value_to_zone_id: %s: %d", zone_value_to_zone_id, max_zone_id)
-    if max_zone_id == 0:
-        logger.warning(
-            'no zones discovered for job "%s" (check agg_field="%s"); writing header-only CSV',
-            tag,
-            agg_field,
-        )
-
-    stat_columns: list[str] = sorted(
-        {
-            column
-            for zone_dict in per_zone_results.values()
-            for column in zone_dict.keys()
-        }
-    )
-
-    if row_col_order == "agg_field,base_raster":
-        output_group_field_name = agg_field
-        output_csv_columns = [output_group_field_name] + stat_columns
-        logger.info('writing CSV output for "%s" to %s', tag, output_csv)
-
-        with open(output_csv, "w", newline="") as output_file:
-            csv_writer = csv.DictWriter(output_file, fieldnames=output_csv_columns)
-            csv_writer.writeheader()
-            for zone_id in range(1, max_zone_id + 1):
-                output_row = {output_group_field_name: zone_id_to_zone_value[zone_id]}
-                for column_name in stat_columns:
-                    operation_value = per_zone_results[zone_id].get(
-                        column_name, float("nan")
-                    )
-                    if isinstance(operation_value, float) and (
-                        math.isnan(operation_value) or math.isinf(operation_value)
-                    ):
-                        output_row[column_name] = ""
-                    else:
-                        output_row[column_name] = operation_value
-                csv_writer.writerow(output_row)
-
-    elif row_col_order == "base_raster,agg_field":
-        raster_stems = sorted(
-            {
-                column_name.split("_", 1)[1]
-                for column_name in stat_columns
-                if "_" in column_name
-            }
-        )
-        operation_names = sorted(
-            {
-                column_name.split("_", 1)[0]
-                for column_name in stat_columns
-                if "_" in column_name
-            }
-        )
-
-        output_group_field_name = "base_raster"
-        transposed_columns = [output_group_field_name] + [
-            f"{zone_id_to_zone_value[zone_id]}_{operation_name}"
-            for zone_id in range(1, max_zone_id + 1)
-            for operation_name in operation_names
+    parts = [p.strip() for p in row_col_order.split(",") if p.strip()]
+    if parts == ["agg_field", "base_raster"]:
+        first_col = agg_field
+        columns = [
+            f"{field}_{stem}" for stem in raster_stems for field in stat_fields
         ]
 
-        logger.info('writing TRANSPOSED CSV output for "%s" to %s', tag, output_csv)
+        def row_iter():
+            for group_value in sorted(
+                all_groups, key=lambda v: (v is None, str(v))
+            ):
+                row = {
+                    first_col: "" if group_value is None else str(group_value)
+                }
+                for stem in raster_stems:
+                    s = raster_stats_by_stem[stem][group_value]
+                    for field in stat_fields:
+                        row[f"{field}_{stem}"] = s[field]
+                yield row
 
-        with open(output_csv, "w", newline="") as output_file:
-            csv_writer = csv.DictWriter(output_file, fieldnames=transposed_columns)
-            csv_writer.writeheader()
+    elif parts == ["base_raster", "agg_field"]:
+        first_col = "base_raster"
+        columns = [
+            f'{field}_{"" if gv is None else str(gv)}'
+            for gv in sorted(all_groups, key=lambda v: (v is None, str(v)))
+            for field in stat_fields
+        ]
 
-            for raster_stem in raster_stems:
-                output_row = {output_group_field_name: raster_stem}
-                for zone_id in range(1, max_zone_id + 1):
-                    zone_label = zone_id_to_zone_value[zone_id]
-                    for operation_name in operation_names:
-                        original_column_name = f"{operation_name}_{raster_stem}"
-                        transposed_column_name = f"{zone_label}_{operation_name}"
+        ordered_groups = sorted(all_groups, key=lambda v: (v is None, str(v)))
 
-                        operation_value = per_zone_results[zone_id].get(
-                            original_column_name, float("nan")
-                        )
-                        if isinstance(operation_value, float) and (
-                            math.isnan(operation_value) or math.isinf(operation_value)
-                        ):
-                            output_row[transposed_column_name] = ""
-                        else:
-                            output_row[transposed_column_name] = operation_value
-                csv_writer.writerow(output_row)
+        def row_iter():
+            for stem in raster_stems:
+                row = {first_col: stem}
+                stats = raster_stats_by_stem[stem]
+                for group_value in ordered_groups:
+                    s = stats[group_value]
+                    group_label = (
+                        "" if group_value is None else str(group_value)
+                    )
+                    for field in stat_fields:
+                        row[f"{field}_{group_label}"] = s[field]
+                yield row
 
     else:
         raise ValueError(
-            f"invalid row_col_order: {row_col_order} (expected agg_field,base_raster or base_raster,agg_field)"
+            "row_col_order must be 'agg_field,base_raster' or 'base_raster,agg_field'"
         )
 
-    logger.info('finished zonal stats job "%s"; wrote %d zones', tag, max_zone_id)
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with output_csv.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=[first_col] + columns)
+        writer.writeheader()
+        writer.writerows(row_iter())
+
+
+def _invoke_timed_callback(reference_time, callback_lambda, callback_period):
+    """Invoke callback if a certain amount of time has passed.
+
+    This is a convenience function to standardize update callbacks from the
+    module.
+
+    Args:
+        reference_time (float): time to base ``callback_period`` length from.
+        callback_lambda (lambda): function to invoke if difference between
+            current time and ``reference_time`` has exceeded
+            ``callback_period``.
+        callback_period (float): time in seconds to pass until
+            ``callback_lambda`` is invoked.
+
+    Return:
+        ``reference_time`` if ``callback_lambda`` not invoked, otherwise the
+        time when ``callback_lambda`` was invoked.
+
+    """
+    current_time = time.time()
+    if current_time - reference_time > callback_period:
+        callback_lambda()
+        return current_time
+    return reference_time
 
 
 def main():
