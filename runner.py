@@ -1072,7 +1072,9 @@ def main():
     )
     logger = logging.getLogger(cfg["project"]["name"])
     logger.info("Loaded config %s", str(cfg_path))
-    task_graph = taskgraph.TaskGraph(cfg["project"]["global_work_dir"], -1)
+    task_graph = taskgraph.TaskGraph(
+        cfg["project"]["global_work_dir"], len(cfg["job_list"]) + 1, 15.0
+    )
 
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 
@@ -1094,6 +1096,8 @@ def main():
             task_name=f"zonal stats {job['tag']}",
         )
     logger.info("All jobs validated (%d)", len(cfg["job_list"]))
+    task_graph.join()
+    task_graph.close()
 
 
 if __name__ == "__main__":
