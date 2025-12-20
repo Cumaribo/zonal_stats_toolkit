@@ -1091,7 +1091,8 @@ def main():
         job["output_csv"] = output_path_timestamped
 
         task_graph.add_task(
-            func=run_zonal_stats_job(**job),
+            func=run_zonal_stats_job,
+            kwargs=job,
             target_path_list=[output_path_timestamped],
             task_name=f"zonal stats {job['tag']}",
         )
