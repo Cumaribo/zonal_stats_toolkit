@@ -1,3 +1,4 @@
+from __future__ import annotations
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -16,6 +17,12 @@ from tqdm.auto import tqdm
 import fiona
 import numpy as np
 import rasterio
+from shapely.geometry import box
+from shapely.strtree import STRtree
+from rasterio.windows import bounds as window_bounds
+
+
+logger = logging.getLogger(__name__)
 
 
 VALID_OPERATIONS = {
@@ -34,6 +41,107 @@ VALID_OPERATIONS = {
     "p90",
     "p95",
 }
+
+
+def collect_zone_arrays_windowed(
+    raster_dataset,
+    shapes_with_zone_ids: list[tuple[dict, int]],
+    raster_nodata_value,
+):
+    shapely_geometries = [
+        shape(geom_mapping) for geom_mapping, _ in shapes_with_zone_ids
+    ]
+    geometry_id_to_zone_id = {
+        id(geom): zone_id
+        for geom, (_, zone_id) in zip(shapely_geometries, shapes_with_zone_ids)
+    }
+    spatial_index = STRtree(shapely_geometries)
+
+    all_zone_ids_list: list[np.ndarray] = []
+    valid_zone_ids_list: list[np.ndarray] = []
+    valid_raster_values_list: list[np.ndarray] = []
+
+    total_windows = sum(1 for _ in raster_dataset.block_windows(1))
+    logger.info("windowed rasterization: %d windows", total_windows)
+
+    for _, window in tqdm(
+        raster_dataset.block_windows(1),
+        total=total_windows,
+        desc="raster windows",
+    ):
+        window_transform = rasterio.windows.transform(window, raster_dataset.transform)
+        window_minx, window_miny, window_maxx, window_maxy = window_bounds(
+            window, raster_dataset.transform
+        )
+        window_bbox = box(window_minx, window_miny, window_maxx, window_maxy)
+
+        candidate_geometries = spatial_index.query(window_bbox)
+        if not candidate_geometries:
+            continue
+
+        candidate_shapes = [
+            (
+                mapping(candidate_geometry),
+                geometry_id_to_zone_id[id(candidate_geometry)],
+            )
+            for candidate_geometry in candidate_geometries
+        ]
+
+        zone_id_window = rasterize(
+            shapes=candidate_shapes,
+            out_shape=(window.height, window.width),
+            transform=window_transform,
+            fill=0,
+            dtype="int32",
+            all_touched=False,
+        )
+
+        zone_pixel_mask = zone_id_window > 0
+        if not np.any(zone_pixel_mask):
+            continue
+
+        raster_window_values = raster_dataset.read(1, window=window)
+
+        all_zone_ids_list.append(
+            zone_id_window[zone_pixel_mask].astype(np.int64, copy=False)
+        )
+
+        if raster_nodata_value is None:
+            valid_mask = zone_pixel_mask
+        else:
+            valid_mask = zone_pixel_mask & (raster_window_values != raster_nodata_value)
+
+        if np.any(valid_mask):
+            valid_zone_ids_list.append(
+                zone_id_window[valid_mask].astype(np.int64, copy=False)
+            )
+            valid_raster_values_list.append(
+                raster_window_values[valid_mask].astype(np.float64, copy=False)
+            )
+
+    all_zone_ids = (
+        np.concatenate(all_zone_ids_list)
+        if all_zone_ids_list
+        else np.array([], dtype=np.int64)
+    )
+    valid_zone_ids = (
+        np.concatenate(valid_zone_ids_list)
+        if valid_zone_ids_list
+        else np.array([], dtype=np.int64)
+    )
+    valid_raster_values = (
+        np.concatenate(valid_raster_values_list)
+        if valid_raster_values_list
+        else np.array([], dtype=np.float64)
+    )
+
+    logger.info(
+        "windowed rasterization done: total_zoned_pixels=%d, valid_zoned_pixels=%d",
+        int(all_zone_ids.size),
+        int(valid_zone_ids.size),
+    )
+
+    return all_zone_ids, valid_zone_ids, valid_raster_values
 
 
 def parse_and_validate_config(cfg_path: Path) -> dict:
@@ -191,6 +299,7 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
                 "agg_field": agg_field,
                 "base_raster_path_list": base_raster_path_list,
                 "operations": operations,
+                "row_col_order": job["row_col_order"],
                 "workdir": workdir,
                 "output_csv": outdir / f"{tag}.csv",
             }
@@ -342,7 +451,7 @@ def _collect_valid_zone_values_for_raster(
 
             return record_index, mapping(shapely_geometry), zone_id
 
-        with ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
             futures = [
                 executor.submit(process_record, record) for record in feature_records
             ]
@@ -369,6 +478,186 @@ def _collect_valid_zone_values_for_raster(
         feature_count,
         used_feature_count,
     )
+
+    if not shapes_with_zone_ids:
+        logger.info("no geometries to rasterize; returning empty arrays")
+        return (
+            np.array([], dtype=np.int64),
+            np.array([], dtype=np.int64),
+            np.array([], dtype=np.float64),
+        )
+
+    logger.info(
+        "rasterizing %d geometries to zone-id raster", len(shapes_with_zone_ids)
+    )
+
+    with rasterio.open(raster_path) as raster_dataset:
+        raster_nodata_value = raster_dataset.nodata
+        (
+            all_zone_ids,
+            valid_zone_ids,
+            valid_raster_values,
+        ) = collect_zone_arrays_windowed(
+            raster_dataset,
+            shapes_with_zone_ids,
+            raster_nodata_value,
+        )
+
+    return all_zone_ids, valid_zone_ids, valid_raster_values
+
+
+def _collect_valid_zone_values_for_raster(
+    raster_path: Path,
+    agg_vector: Path,
+    agg_layer: str,
+    agg_field: str,
+    zone_value_to_zone_id: dict[str, int],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    logger.info("opening raster %s", raster_path)
+    with rasterio.open(raster_path) as raster_dataset:
+        raster_band_array = raster_dataset.read(1)
+        raster_transform = raster_dataset.transform
+        raster_nodata_value = raster_dataset.nodata
+        raster_crs = raster_dataset.crs
+
+    pixel_width = abs(raster_transform.a)
+    pixel_height = abs(raster_transform.e)
+    geometry_simplify_tolerance = 0.5 * max(pixel_width, pixel_height)
+    logger.info(
+        "raster loaded (width=%d, height=%d, nodata=%s, simplify_tol=%f)",
+        raster_band_array.shape[1],
+        raster_band_array.shape[0],
+        str(raster_nodata_value),
+        geometry_simplify_tolerance,
+    )
+
+    shapes_with_zone_ids: list[tuple[dict, int]] = []
+
+    logger.info("opening vector %s (layer=%s)", agg_vector, agg_layer or "<first>")
+    with fiona.open(agg_vector, layer=agg_layer) as vector_layer:
+        vector_layer_crs = None
+        if vector_layer.crs_wkt:
+            vector_layer_crs = CRS.from_wkt(vector_layer.crs_wkt)
+        elif vector_layer.crs:
+            vector_layer_crs = CRS.from_user_input(vector_layer.crs)
+
+        raster_dataset_crs = CRS.from_user_input(raster_crs) if raster_crs else None
+
+        geometry_transformer = None
+        if (
+            vector_layer_crs
+            and raster_dataset_crs
+            and vector_layer_crs != raster_dataset_crs
+        ):
+            logger.info(
+                "reprojecting vector from %s to %s",
+                vector_layer_crs.to_string(),
+                raster_dataset_crs.to_string(),
+            )
+            geometry_transformer = Transformer.from_crs(
+                vector_layer_crs,
+                raster_dataset_crs,
+                always_xy=True,
+            )
+        else:
+            logger.info("no reprojection needed (vector and raster CRS compatible)")
+
+        def reproject_xy(x, y, z=None):
+            return geometry_transformer.transform(x, y)
+
+        features = list(vector_layer)
+        feature_records: list[tuple[int, dict, int]] = []
+
+        feature_count = 0
+        used_feature_count = 0
+
+        for feature in features:
+            feature_count += 1
+
+            feature_properties = feature.get("properties") or {}
+            zone_value = feature_properties.get(agg_field)
+            if zone_value is None:
+                logger.debug(
+                    'feature %d skipped: missing agg_field "%s"',
+                    feature_count,
+                    agg_field,
+                )
+                continue
+
+            zone_value_string = str(zone_value)
+            zone_id = zone_value_to_zone_id.get(zone_value_string)
+            if zone_id is None:
+                logger.debug(
+                    'feature %d skipped: zone value "%s" not in zone mapping',
+                    feature_count,
+                    zone_value_string,
+                )
+                continue
+
+            feature_geometry = feature.get("geometry")
+            if not feature_geometry:
+                logger.debug(
+                    "feature %d (zone_id=%d) skipped: no geometry",
+                    feature_count,
+                    zone_id,
+                )
+                continue
+
+            feature_records.append((feature_count, feature_geometry, zone_id))
+
+        logger.info(
+            "dispatching %d features to thread pool for reprojection/simplify",
+            len(feature_records),
+        )
+
+        shapes_with_zone_ids = []
+        used_feature_count = 0
+
+        def process_record(
+            record: tuple[int, dict, int],
+        ) -> tuple[int, dict, int] | None:
+            record_index, feature_geometry, zone_id = record
+            shapely_geometry = shape(feature_geometry)
+
+            if geometry_transformer is not None:
+                shapely_geometry = shapely_transform(reproject_xy, shapely_geometry)
+
+            shapely_geometry = shapely_geometry.simplify(
+                geometry_simplify_tolerance,
+                preserve_topology=True,
+            )
+
+            if shapely_geometry.is_empty:
+                logger.debug(
+                    "feature %d (zone_id=%d) skipped: geometry empty after simplify",
+                    record_index,
+                    zone_id,
+                )
+                return None
+
+            return record_index, mapping(shapely_geometry), zone_id
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            futures = [
+                executor.submit(process_record, record) for record in feature_records
+            ]
+            for future in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc=f"simplifying geometries ({raster_path.name})",
+            ):
+                result = future.result()
+                if result is None:
+                    continue
+                record_index, mapped_geometry, zone_id = result
+                shapes_with_zone_ids.append((mapped_geometry, zone_id))
+                used_feature_count += 1
+
+        logger.info(
+            "vector processing complete: %d features read, %d geometries used after simplify",
+            feature_count,
+            used_feature_count,
+        )
 
     if not shapes_with_zone_ids:
         logger.info("no geometries to rasterize; returning empty arrays")
@@ -416,16 +705,6 @@ def _collect_valid_zone_values_for_raster(
     return all_zone_ids, valid_zone_ids, valid_raster_values
 
 
-import csv
-import math
-from pathlib import Path
-
-import numpy as np
-import logging
-
-logger = logging.getLogger(__name__)
-
-
 def run_zonal_stats_job(
     base_raster_path_list: list[Path],
     agg_vector: Path,
@@ -435,6 +714,7 @@ def run_zonal_stats_job(
     output_csv: Path,
     workdir: Path,
     tag: str,
+    row_col_order: str,
 ) -> None:
     workdir.mkdir(parents=True, exist_ok=True)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -455,6 +735,25 @@ def run_zonal_stats_job(
     zone_value_to_zone_id: dict[str, int] = {}
     zone_id_to_zone_value: dict[int, str] = {}
 
+    with fiona.open(agg_vector, layer=agg_layer) as vector_layer:
+        feature_count = 0
+        for feature in vector_layer:
+            feature_count += 1
+            feature_properties = feature.get("properties") or {}
+            zone_value = feature_properties.get(agg_field)
+            if zone_value is None:
+                continue
+            zone_value_string = str(zone_value)
+            if zone_value_string not in zone_value_to_zone_id:
+                zone_id = len(zone_value_to_zone_id) + 1
+                zone_value_to_zone_id[zone_value_string] = zone_id
+                zone_id_to_zone_value[zone_id] = zone_value_string
+        logger.info(
+            "built zone mapping from vector: %d features, %d unique zone values",
+            feature_count,
+            len(zone_value_to_zone_id),
+        )
+
     per_zone_results: dict[int, dict[str, float]] = {}
 
     normalized_operations = [
@@ -473,15 +772,10 @@ def run_zonal_stats_job(
             if 0 <= percentile_value <= 100:
                 percentile_operations[operation] = percentile_value
 
-    for index, raster_path in enumerate(base_raster_path_list, start=1):
+    def process_raster(
+        raster_path: Path,
+    ) -> tuple[str, np.ndarray, np.ndarray, np.ndarray]:
         raster_stem = raster_path.stem
-        logger.info(
-            "processing raster %d/%d: %s",
-            index,
-            len(base_raster_path_list),
-            raster_path,
-        )
-
         (
             all_zone_ids,
             valid_zone_ids,
@@ -492,16 +786,40 @@ def run_zonal_stats_job(
             agg_layer,
             agg_field,
             zone_value_to_zone_id,
-            zone_id_to_zone_value,
         )
+        return raster_stem, all_zone_ids, valid_zone_ids, valid_raster_values
 
-        logger.debug(all_zone_ids)
-        logger.debug(valid_zone_ids)
-        logger.debug(valid_raster_values)
+    results: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
 
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        futures = {
+            executor.submit(process_raster, raster_path): raster_path
+            for raster_path in base_raster_path_list
+        }
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc=f"processing rasters ({tag})",
+        ):
+            (
+                raster_stem,
+                all_zone_ids,
+                valid_zone_ids,
+                valid_raster_values,
+            ) = future.result()
+            results.append(
+                (raster_stem, all_zone_ids, valid_zone_ids, valid_raster_values)
+            )
+
+    for (
+        raster_stem,
+        all_zone_ids,
+        valid_zone_ids,
+        valid_raster_values,
+    ) in results:
         logger.info(
             "raster %s: total_zoned_pixels=%d, valid_zoned_pixels=%d",
-            raster_path,
+            raster_stem,
             int(all_zone_ids.size),
             int(valid_zone_ids.size),
         )
@@ -509,7 +827,7 @@ def run_zonal_stats_job(
         if not all_zone_ids.size:
             logger.info(
                 "raster %s contributed no zoned pixels, skipping stats",
-                raster_path,
+                raster_stem,
             )
             continue
 
@@ -645,7 +963,7 @@ def run_zonal_stats_job(
                         )
 
     max_zone_id = len(zone_value_to_zone_id)
-    logger.debug(f"zone_value_to_zone_id: {zone_value_to_zone_id}: {max_zone_id}")
+    logger.debug("zone_value_to_zone_id: %s: %d", zone_value_to_zone_id, max_zone_id)
     if max_zone_id == 0:
         logger.warning(
             'no zones discovered for job "%s" (check agg_field="%s"); writing header-only CSV',
@@ -661,26 +979,80 @@ def run_zonal_stats_job(
         }
     )
 
-    output_group_field_name = agg_field
-    output_csv_columns = [output_group_field_name] + stat_columns
-    logger.info('writing CSV output for "%s" to %s', tag, output_csv)
+    if row_col_order == "agg_field,base_raster":
+        output_group_field_name = agg_field
+        output_csv_columns = [output_group_field_name] + stat_columns
+        logger.info('writing CSV output for "%s" to %s', tag, output_csv)
 
-    with open(output_csv, "w", newline="") as output_file:
-        csv_writer = csv.DictWriter(output_file, fieldnames=output_csv_columns)
-        csv_writer.writeheader()
-        for zone_id in range(1, max_zone_id + 1):
-            output_row = {output_group_field_name: zone_id_to_zone_value[zone_id]}
-            for column_name in stat_columns:
-                operation_value = per_zone_results[zone_id].get(
-                    column_name, float("nan")
-                )
-                if isinstance(operation_value, float) and (
-                    math.isnan(operation_value) or math.isinf(operation_value)
-                ):
-                    output_row[column_name] = ""
-                else:
-                    output_row[column_name] = operation_value
-            csv_writer.writerow(output_row)
+        with open(output_csv, "w", newline="") as output_file:
+            csv_writer = csv.DictWriter(output_file, fieldnames=output_csv_columns)
+            csv_writer.writeheader()
+            for zone_id in range(1, max_zone_id + 1):
+                output_row = {output_group_field_name: zone_id_to_zone_value[zone_id]}
+                for column_name in stat_columns:
+                    operation_value = per_zone_results[zone_id].get(
+                        column_name, float("nan")
+                    )
+                    if isinstance(operation_value, float) and (
+                        math.isnan(operation_value) or math.isinf(operation_value)
+                    ):
+                        output_row[column_name] = ""
+                    else:
+                        output_row[column_name] = operation_value
+                csv_writer.writerow(output_row)
+
+    elif row_col_order == "base_raster,agg_field":
+        raster_stems = sorted(
+            {
+                column_name.split("_", 1)[1]
+                for column_name in stat_columns
+                if "_" in column_name
+            }
+        )
+        operation_names = sorted(
+            {
+                column_name.split("_", 1)[0]
+                for column_name in stat_columns
+                if "_" in column_name
+            }
+        )
+
+        output_group_field_name = "base_raster"
+        transposed_columns = [output_group_field_name] + [
+            f"{zone_id_to_zone_value[zone_id]}_{operation_name}"
+            for zone_id in range(1, max_zone_id + 1)
+            for operation_name in operation_names
+        ]
+
+        logger.info('writing TRANSPOSED CSV output for "%s" to %s', tag, output_csv)
+
+        with open(output_csv, "w", newline="") as output_file:
+            csv_writer = csv.DictWriter(output_file, fieldnames=transposed_columns)
+            csv_writer.writeheader()
+
+            for raster_stem in raster_stems:
+                output_row = {output_group_field_name: raster_stem}
+                for zone_id in range(1, max_zone_id + 1):
+                    zone_label = zone_id_to_zone_value[zone_id]
+                    for operation_name in operation_names:
+                        original_column_name = f"{operation_name}_{raster_stem}"
+                        transposed_column_name = f"{zone_label}_{operation_name}"
+
+                        operation_value = per_zone_results[zone_id].get(
+                            original_column_name, float("nan")
+                        )
+                        if isinstance(operation_value, float) and (
+                            math.isnan(operation_value) or math.isinf(operation_value)
+                        ):
+                            output_row[transposed_column_name] = ""
+                        else:
+                            output_row[transposed_column_name] = operation_value
+                csv_writer.writerow(output_row)
+
+    else:
+        raise ValueError(
+            f"invalid row_col_order: {row_col_order} (expected agg_field,base_raster or base_raster,agg_field)"
+        )
 
     logger.info('finished zonal stats job "%s"; wrote %d zones', tag, max_zone_id)
 
