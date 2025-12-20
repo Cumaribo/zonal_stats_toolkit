@@ -270,9 +270,10 @@ def fast_zonal_statistics(
     polygons_might_overlap=True,
     working_dir=None,
     clean_working_dir=True,
+    percentile_list=None,
 ):
     logger.info(
-        "fast_zonal_statistics start | raster=%s band=%s | vector=%s layer=%s field=%s | ignore_nodata=%s overlap=%s | working_dir=%s clean=%s",
+        "fast_zonal_statistics start | raster=%s band=%s | vector=%s layer=%s field=%s | ignore_nodata=%s overlap=%s | working_dir=%s clean=%s | percentiles=%s",
         base_raster_path_band[0],
         base_raster_path_band[1],
         str(aggregate_vector_path),
@@ -282,7 +283,14 @@ def fast_zonal_statistics(
         polygons_might_overlap,
         working_dir,
         clean_working_dir,
+        percentile_list,
     )
+
+    percentile_list = [] if percentile_list is None else list(percentile_list)
+    percentile_list = sorted(set(float(p) for p in percentile_list))
+    percentile_keys = [
+        f"p{int(p) if float(p).is_integer() else p}" for p in percentile_list
+    ]
 
     raster_info = geoprocessing.get_raster_info(base_raster_path_band[0])
     raster_nodata = raster_info["nodata"][base_raster_path_band[1] - 1]
@@ -407,7 +415,7 @@ def fast_zonal_statistics(
     )
 
     v_minx, v_maxx, v_miny, v_maxy = vec_extent
-    r_minx, r_miny, r_maxx, r_maxy = raster_bbox  # <- [minx, miny, maxx, maxy]
+    r_minx, r_miny, r_maxx, r_maxy = raster_bbox
 
     no_intersection = (
         v_maxx < r_minx or v_minx > r_maxx or v_maxy < r_miny or v_miny > r_maxy
@@ -416,13 +424,7 @@ def fast_zonal_statistics(
     if no_intersection:
         logger.error(
             f"aggregate vector {aggregate_vector_path} does not intersect with "
-            f"the raster {base_raster_path_band[0]}: vector extent {vec_extent} vs raster bounding box {raster_bbox}\n"
-            f"extent intersection check:\n"
-            f"  expr: vec_extent[1] < raster_bbox[0] or vec_extent[0] > raster_bbox[1] or vec_extent[3] < raster_bbox[2] or vec_extent[2] > raster_bbox[3]\n"
-            f"  values: {vec_extent[1]} < {raster_bbox[0]} or {vec_extent[0]} > {raster_bbox[1]} or {vec_extent[3]} < {raster_bbox[2]} or {vec_extent[2]} > {raster_bbox[3]}\n"
-            f"  result: {(vec_extent[1] < raster_bbox[0]) or (vec_extent[0] > raster_bbox[1]) or (vec_extent[3] < raster_bbox[2]) or (vec_extent[2] > raster_bbox[3])}\n"
-            f"  vec_extent=(minx={vec_extent[0]}, maxx={vec_extent[1]}, miny={vec_extent[2]}, maxy={vec_extent[3]})\n"
-            f"  raster_bbox=(minx={raster_bbox[0]}, maxx={raster_bbox[1]}, miny={raster_bbox[2]}, maxy={raster_bbox[3]})"
+            f"the raster {base_raster_path_band[0]}: vector extent {vec_extent} vs raster bounding box {raster_bbox}"
         )
         group_stats = collections.defaultdict(
             lambda: {
@@ -430,7 +432,10 @@ def fast_zonal_statistics(
                 "max": None,
                 "count": 0,
                 "nodata_count": 0,
+                "valid_count": 0,
                 "sum": 0.0,
+                "stdev": None,
+                **{k: None for k in percentile_keys},
             }
         )
         for group_value in unique_group_values:
@@ -490,8 +495,17 @@ def fast_zonal_statistics(
             "count": 0,
             "nodata_count": 0,
             "sum": 0.0,
+            "sumsq": 0.0,
         }
     )
+
+    fid_value_chunks = None
+    if percentile_list:
+        fid_value_chunks = collections.defaultdict(list)
+        logger.info(
+            "percentiles enabled | collecting values in memory | percentiles=%s",
+            percentile_list,
+        )
 
     last_time = time.time()
     logger.info("processing %d disjoint polygon sets", len(disjoint_fid_sets))
@@ -622,8 +636,11 @@ def fast_zonal_statistics(
             valid_mask = agg_fid_block != agg_fid_nodata
             valid_agg_fids = agg_fid_block[valid_mask]
             valid_clipped = clipped_block[valid_mask]
+
             for agg_fid in np.unique(valid_agg_fids):
                 masked_clipped_block = valid_clipped[valid_agg_fids == agg_fid]
+                total_count = masked_clipped_block.size
+
                 if raster_nodata is not None:
                     clipped_nodata_mask = np.isclose(
                         masked_clipped_block, raster_nodata
@@ -633,9 +650,9 @@ def fast_zonal_statistics(
                         masked_clipped_block.shape, dtype=bool
                     )
 
-                aggregate_stats[agg_fid]["nodata_count"] += np.count_nonzero(
-                    clipped_nodata_mask
-                )
+                nodata_count = np.count_nonzero(clipped_nodata_mask)
+                aggregate_stats[agg_fid]["count"] += total_count
+                aggregate_stats[agg_fid]["nodata_count"] += nodata_count
 
                 if ignore_nodata:
                     masked_clipped_block = masked_clipped_block[
@@ -643,6 +660,11 @@ def fast_zonal_statistics(
                     ]
                 if masked_clipped_block.size == 0:
                     continue
+
+                if fid_value_chunks is not None:
+                    fid_value_chunks[agg_fid].append(
+                        masked_clipped_block.astype(np.float32, copy=False)
+                    )
 
                 if aggregate_stats[agg_fid]["min"] is None:
                     aggregate_stats[agg_fid]["min"] = masked_clipped_block[0]
@@ -656,8 +678,11 @@ def fast_zonal_statistics(
                     np.max(masked_clipped_block),
                     aggregate_stats[agg_fid]["max"],
                 )
-                aggregate_stats[agg_fid]["count"] += masked_clipped_block.size
                 aggregate_stats[agg_fid]["sum"] += np.sum(masked_clipped_block)
+                aggregate_stats[agg_fid]["sumsq"] += np.sum(
+                    masked_clipped_block * masked_clipped_block,
+                    dtype=np.float64,
+                )
 
         logger.info(
             "set %d/%d done | fids_with_any_stats_so_far=%d",
@@ -750,11 +775,21 @@ def fast_zonal_statistics(
                     unset_fid_block.shape, dtype=bool
                 )
 
-            valid_unset_fid_block = unset_fid_block[~unset_fid_nodata_mask]
+            if ignore_nodata:
+                valid_unset_fid_block = unset_fid_block[~unset_fid_nodata_mask]
+            else:
+                valid_unset_fid_block = unset_fid_block
+
+            aggregate_stats[unset_fid]["count"] = unset_fid_block.size
+            aggregate_stats[unset_fid]["nodata_count"] = np.count_nonzero(
+                unset_fid_nodata_mask
+            )
+
             if valid_unset_fid_block.size == 0:
                 aggregate_stats[unset_fid]["min"] = 0.0
                 aggregate_stats[unset_fid]["max"] = 0.0
                 aggregate_stats[unset_fid]["sum"] = 0.0
+                aggregate_stats[unset_fid]["sumsq"] = 0.0
             else:
                 aggregate_stats[unset_fid]["min"] = np.min(
                     valid_unset_fid_block
@@ -765,11 +800,15 @@ def fast_zonal_statistics(
                 aggregate_stats[unset_fid]["sum"] = np.sum(
                     valid_unset_fid_block
                 )
+                aggregate_stats[unset_fid]["sumsq"] = np.sum(
+                    valid_unset_fid_block * valid_unset_fid_block,
+                    dtype=np.float64,
+                )
 
-            aggregate_stats[unset_fid]["count"] = valid_unset_fid_block.size
-            aggregate_stats[unset_fid]["nodata_count"] = np.count_nonzero(
-                unset_fid_nodata_mask
-            )
+            if fid_value_chunks is not None and valid_unset_fid_block.size:
+                fid_value_chunks[unset_fid].append(
+                    valid_unset_fid_block.astype(np.float32, copy=False)
+                )
 
     unset_fids = aggregate_layer_fid_set.difference(aggregate_stats)
     for fid in unset_fids:
@@ -780,6 +819,23 @@ def fast_zonal_statistics(
         len(unset_fids),
         len(aggregate_layer_fid_set),
     )
+
+    if fid_value_chunks is not None:
+        logger.info(
+            "computing per-fid percentiles | percentiles=%s", percentile_list
+        )
+        fid_percentiles = {}
+        for fid, chunks in fid_value_chunks.items():
+            if not chunks:
+                fid_percentiles[fid] = [None] * len(percentile_list)
+                continue
+            vals = np.concatenate(chunks)
+            fid_percentiles[fid] = np.percentile(vals, percentile_list).tolist()
+        logger.info(
+            "computing per-fid percentiles done | fids=%d", len(fid_percentiles)
+        )
+    else:
+        fid_percentiles = None
 
     spat_ref = None
     clipped_band = None
@@ -796,24 +852,69 @@ def fast_zonal_statistics(
             "max": None,
             "count": 0,
             "nodata_count": 0,
+            "valid_count": 0,
             "sum": 0.0,
+            "sumsq": 0.0,
+            "stdev": None,
+            **{k: None for k in percentile_keys},
         }
     )
+
+    group_value_chunks = None
+    if percentile_list:
+        group_value_chunks = collections.defaultdict(list)
 
     for fid in aggregate_layer_fid_set:
         group_value = fid_to_group_value[fid]
         fid_stats = aggregate_stats[fid]
         g = grouped_stats[group_value]
+
         g["count"] += fid_stats["count"]
         g["nodata_count"] += fid_stats["nodata_count"]
         g["sum"] += fid_stats["sum"]
-        if fid_stats["count"] > 0:
+        g["sumsq"] += fid_stats["sumsq"]
+
+        fid_valid_count = fid_stats["count"] - fid_stats["nodata_count"]
+        if fid_valid_count > 0:
             if g["min"] is None:
                 g["min"] = fid_stats["min"]
                 g["max"] = fid_stats["max"]
             else:
                 g["min"] = min(g["min"], fid_stats["min"])
                 g["max"] = max(g["max"], fid_stats["max"])
+
+        if group_value_chunks is not None:
+            chunks = fid_value_chunks.get(fid)
+            if chunks:
+                group_value_chunks[group_value].extend(chunks)
+
+    if group_value_chunks is not None:
+        logger.info(
+            "computing grouped percentiles | groups=%d | percentiles=%s",
+            len(group_value_chunks),
+            percentile_list,
+        )
+        for group_value, chunks in group_value_chunks.items():
+            if not chunks:
+                continue
+            vals = np.concatenate(chunks)
+            pct_vals = np.percentile(vals, percentile_list)
+            for k, v in zip(percentile_keys, pct_vals.tolist()):
+                grouped_stats[group_value][k] = v
+        logger.info("computing grouped percentiles done")
+
+    for group_value, g in grouped_stats.items():
+        valid_count = g["count"] - g["nodata_count"]
+        g["valid_count"] = valid_count
+        if valid_count > 0:
+            mean = g["sum"] / valid_count
+            var = g["sumsq"] / valid_count - mean * mean
+            if var < 0:
+                var = 0.0
+            g["stdev"] = float(np.sqrt(var))
+        else:
+            g["stdev"] = None
+        del g["sumsq"]
 
     logger.info("grouping done | groups=%d", len(grouped_stats))
 
@@ -841,6 +942,12 @@ def run_zonal_stats_job(
     all_groups = set()
     stat_fields = None
 
+    percentile_list = [
+        float(op[1:])
+        for op in operations
+        if op.startswith("p") and op[1:].replace(".", "", 1).isdigit()
+    ]
+
     for raster_path in base_raster_path_list:
         stem = raster_path.stem
         raster_stems.append(stem)
@@ -853,6 +960,7 @@ def run_zonal_stats_job(
             polygons_might_overlap=False,
             working_dir=str(workdir),
             clean_working_dir=False,
+            percentile_list=percentile_list,
         )
         raster_stats_by_stem[stem] = stats
         all_groups.update(stats.keys())
