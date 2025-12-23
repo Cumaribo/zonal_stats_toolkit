@@ -175,9 +175,7 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
             agg_vector = cfg_dir / agg_vector
 
         if not agg_vector.exists():
-            raise FileNotFoundError(
-                f"[job:{tag}] agg_vector not found: {agg_vector}"
-            )
+            raise FileNotFoundError(f"[job:{tag}] agg_vector not found: {agg_vector}")
 
         if not agg_vector.is_file():
             raise IsADirectoryError(f"[job:{tag}] agg_vector is not a file: {agg_vector}")
@@ -192,6 +190,7 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
 
         base_raster_pattern = job.get("base_raster_pattern", "").strip()
         if base_raster_pattern in [None, ""]:
+<<<<<<< HEAD
             raise FileNotFoundError(
                 f"[job:{tag}] base_raster_pattern tag not found"
             )
@@ -209,6 +208,15 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
                 [Path(p) for p in glob.glob(full_pattern)]
             )
 
+=======
+            raise FileNotFoundError(f"[job:{tag}] base_raster_pattern tag not found")
+        base_raster_path_list = [
+            path
+            for pattern in base_raster_pattern.split(",")
+            if pattern.strip()
+            for path in Path(".").glob(pattern.strip())
+        ]
+>>>>>>> e09b6b5 (re #4 updating ops, raster paths and better task naming)
         if not base_raster_path_list:
             raise FileNotFoundError(
                 f"[job:{tag}] no files found at {base_raster_pattern}"
@@ -221,9 +229,7 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
         ops_raw = job.get("operations", "").strip()
         if not ops_raw:
             raise ValueError(f"[job:{tag}] missing operations")
-        operations = [
-            o.strip().lower() for o in ops_raw.split(",") if o.strip()
-        ]
+        operations = [o.strip().lower() for o in ops_raw.split(",") if o.strip()]
         if not operations:
             raise ValueError(f"[job:{tag}] operations is empty")
 
@@ -375,20 +381,14 @@ def fast_zonal_statistics(
         "sumsq": 0.0,
     }
 
-    def _open_vector_layer(
-        vector_path, layer_name, vector_label, writable=False
-    ):
+    def _open_vector_layer(vector_path, layer_name, vector_label, writable=False):
         open_flags = gdal.OF_VECTOR | (gdal.OF_UPDATE if writable else 0)
         vector_dataset = gdal.OpenEx(str(vector_path), open_flags)
         if vector_dataset is None:
-            raise RuntimeError(
-                f"Could not open {vector_label} vector at {vector_path}"
-            )
+            raise RuntimeError(f"Could not open {vector_label} vector at {vector_path}")
 
         if layer_name is not None:
-            logger.info(
-                "selecting %s layer by name: %s", vector_label, layer_name
-            )
+            logger.info("selecting %s layer by name: %s", vector_label, layer_name)
             vector_layer = vector_dataset.GetLayerByName(layer_name)
         else:
             logger.info("selecting default %s layer", vector_label)
@@ -429,9 +429,7 @@ def fast_zonal_statistics(
         needs_reproject = not source_srs.IsSame(raster_srs)
         logger.info("vector SRS detected | needs_reproject=%s", needs_reproject)
     else:
-        logger.info(
-            "vector SRS missing/unknown | forcing reprojection to raster SRS"
-        )
+        logger.info("vector SRS missing/unknown | forcing reprojection to raster SRS")
 
     if working_dir and not os.access(working_dir, os.W_OK):
         stat_info = os.stat(working_dir)
@@ -442,9 +440,7 @@ def fast_zonal_statistics(
         )
 
     temp_working_dir = tempfile.mkdtemp(dir=working_dir)
-    projected_vector_path = os.path.join(
-        temp_working_dir, "projected_vector.gpkg"
-    )
+    projected_vector_path = os.path.join(temp_working_dir, "projected_vector.gpkg")
     logger.info("created temp working dir: %s", temp_working_dir)
 
     def _raster_nodata_mask(value_array):
@@ -515,9 +511,7 @@ def fast_zonal_statistics(
         )
 
         vector_min_x, vector_max_x, vector_min_y, vector_max_y = vector_extent
-        raster_min_x, raster_min_y, raster_max_x, raster_max_y = (
-            raster_bounding_box
-        )
+        raster_min_x, raster_min_y, raster_max_x, raster_max_y = raster_bounding_box
         has_no_intersection = (
             vector_max_x < raster_min_x
             or vector_min_x > raster_max_x
@@ -616,9 +610,7 @@ def fast_zonal_statistics(
         feature_id_raster_band = feature_id_raster_dataset.GetRasterBand(1)
 
         logger.info("populating disjoint layer features (transaction start)")
-        logger.info(
-            "populating disjoint layer features done (transaction commit)"
-        )
+        logger.info("populating disjoint layer features done (transaction commit)")
 
         rasterize_callback_message = "rasterizing polygons %.1f%% complete %s"
         rasterize_callback = _make_logger_callback(rasterize_callback_message)
@@ -640,9 +632,7 @@ def fast_zonal_statistics(
         group_sketch = None
         if percentile_list:
             group_sketch = defaultdict(lambda: kll_floats_sketch(k=200))
-        for block_index, feature_id_offset in enumerate(
-            feature_id_raster_offsets
-        ):
+        for block_index, feature_id_offset in enumerate(feature_id_raster_offsets):
             block_log_time = _invoke_timed_callback(
                 block_log_time,
                 lambda block_index_value=block_index: logger.info(
@@ -656,9 +646,7 @@ def fast_zonal_statistics(
                 _LOGGING_PERIOD,
             )
 
-            feature_id_block = feature_id_raster_band.ReadAsArray(
-                **feature_id_offset
-            )
+            feature_id_block = feature_id_raster_band.ReadAsArray(**feature_id_offset)
             raster_value_block = raster_band.ReadAsArray(**feature_id_offset)
 
 <<<<<<< HEAD
@@ -948,9 +936,7 @@ def fast_zonal_statistics(
                 if window_width_pixels <= 0 or window_height_pixels <= 0:
 =======
             for feature_id in np.unique(block_feature_ids):
-                feature_values = block_raster_values[
-                    block_feature_ids == feature_id
-                ]
+                feature_values = block_raster_values[block_feature_ids == feature_id]
                 total_count = feature_values.size
                 if total_count == 0:
 >>>>>>> 1194c0a (re #4 simplifying overlap even more)
@@ -971,9 +957,7 @@ def fast_zonal_statistics(
                 if group_sketch is not None:
                     group_value = feature_id_to_group_value[feature_id]
                     sk = group_sketch[group_value]
-                    sk.update(
-                        feature_values.astype(np.float32, copy=False).ravel()
-                    )
+                    sk.update(feature_values.astype(np.float32, copy=False).ravel())
 
                 block_min_value = np.min(feature_values)
                 block_max_value = np.max(feature_values)
@@ -981,12 +965,8 @@ def fast_zonal_statistics(
                     feature_stats["min"] = block_min_value
                     feature_stats["max"] = block_max_value
                 else:
-                    feature_stats["min"] = min(
-                        feature_stats["min"], block_min_value
-                    )
-                    feature_stats["max"] = max(
-                        feature_stats["max"], block_max_value
-                    )
+                    feature_stats["min"] = min(feature_stats["min"], block_min_value)
+                    feature_stats["max"] = max(feature_stats["max"], block_max_value)
 
                 feature_stats["sum"] += np.sum(feature_values)
                 feature_stats["sumsq"] += np.sum(
@@ -998,9 +978,7 @@ def fast_zonal_statistics(
         feature_id_raster_band = None
         feature_id_raster_dataset = None
 
-        remaining_unset_feature_ids = feature_id_set.difference(
-            feature_stats_by_id
-        )
+        remaining_unset_feature_ids = feature_id_set.difference(feature_stats_by_id)
         for missing_feature_id in remaining_unset_feature_ids:
             feature_stats_by_id[missing_feature_id]
 
@@ -1138,6 +1116,7 @@ def fast_zonal_statistics(
                     group_stats["min"] = feature_stats["min"]
                     group_stats["max"] = feature_stats["max"]
                 else:
+<<<<<<< HEAD
                     group_stats["min"] = min(
                         group_stats["min"], feature_stats["min"]
                     )
@@ -1145,11 +1124,13 @@ def fast_zonal_statistics(
                         group_stats["max"], feature_stats["max"]
                     )
 >>>>>>> 9161e18 (re #4 adding a test harness for development)
+=======
+                    group_stats["min"] = min(group_stats["min"], feature_stats["min"])
+                    group_stats["max"] = max(group_stats["max"], feature_stats["max"])
+>>>>>>> e09b6b5 (re #4 updating ops, raster paths and better task naming)
 
         for group_value, group_stats in grouped_stats.items():
-            valid_count = (
-                group_stats["total_count"] - group_stats["nodata_count"]
-            )
+            valid_count = group_stats["total_count"] - group_stats["nodata_count"]
             group_stats["valid_count"] = valid_count
             group_stats["mean"] = (
                 (group_stats["sum"] / valid_count) if valid_count > 0 else None
@@ -1163,9 +1144,7 @@ def fast_zonal_statistics(
                     ] = sk.get_quantile(p / 100.0)
 
         for group_value, group_stats in grouped_stats.items():
-            valid_count = (
-                group_stats["total_count"] - group_stats["nodata_count"]
-            )
+            valid_count = group_stats["total_count"] - group_stats["nodata_count"]
             group_stats["valid_count"] = valid_count
             if valid_count > 0:
                 mean_value = group_stats["sum"] / valid_count
@@ -1280,7 +1259,7 @@ def run_zonal_stats_job(
                 "percentile_list": percentile_list,
             },
             store_result=True,
-            task_name=f"stats for {tag}",
+            task_name=f"stats for {tag} / {raster_path}",
         )
         stats_task_list.append((stem, stats_task))
 
@@ -1292,17 +1271,11 @@ def run_zonal_stats_job(
     parts = [p.strip() for p in row_col_order.split(",") if p.strip()]
     if parts == ["agg_field", "base_raster"]:
         first_col = agg_field
-        columns = [
-            f"{field}_{stem}" for stem in raster_stems for field in operations
-        ]
+        columns = [f"{field}_{stem}" for stem in raster_stems for field in operations]
 
         def row_iter():
-            for group_value in sorted(
-                all_groups, key=lambda v: (v is None, str(v))
-            ):
-                row = {
-                    first_col: "" if group_value is None else str(group_value)
-                }
+            for group_value in sorted(all_groups, key=lambda v: (v is None, str(v))):
+                row = {first_col: "" if group_value is None else str(group_value)}
                 for stem in raster_stems:
                     s = raster_stats_by_stem[stem][group_value]
                     for field in operations:
@@ -1325,9 +1298,7 @@ def run_zonal_stats_job(
                 stats = raster_stats_by_stem[stem]
                 for group_value in ordered_groups:
                     s = stats[group_value]
-                    group_label = (
-                        "" if group_value is None else str(group_value)
-                    )
+                    group_label = "" if group_value is None else str(group_value)
                     for field in operations:
                         row[f"{field}_{group_label}"] = s[field]
                 yield row
@@ -1441,12 +1412,8 @@ def run_fast_zonal_statistics_test_case(
             )
         return left_value == right_value
 
-    def _assert_group_stats_equal(
-        actual_stats, expected_stats, group_value, key_name
-    ):
-        if not _close_enough(
-            actual_stats.get(key_name), expected_stats.get(key_name)
-        ):
+    def _assert_group_stats_equal(actual_stats, expected_stats, group_value, key_name):
+        if not _close_enough(actual_stats.get(key_name), expected_stats.get(key_name)):
             print(
                 f"Group={group_value!r} key={key_name!r} actual={actual_stats.get(key_name)!r} expected={expected_stats.get(key_name)!r}"
             )
@@ -1480,9 +1447,7 @@ def run_fast_zonal_statistics_test_case(
         count_value = int(values_1d.size)
         nodata_count_value = int(np.count_nonzero(nodata_mask))
         if ignore_nodata:
-            valid_values = values_1d[~nodata_mask].astype(
-                np.float64, copy=False
-            )
+            valid_values = values_1d[~nodata_mask].astype(np.float64, copy=False)
         else:
             valid_values = values_1d.astype(np.float64, copy=False)
 
@@ -1503,9 +1468,7 @@ def run_fast_zonal_statistics_test_case(
         sum_value = float(np.sum(valid_values))
         mean_value = sum_value / valid_count_value
         sumsq_value = float(np.sum(valid_values * valid_values))
-        variance_value = (
-            sumsq_value / valid_count_value - mean_value * mean_value
-        )
+        variance_value = sumsq_value / valid_count_value - mean_value * mean_value
         if variance_value < 0:
             variance_value = 0.0
         stdev_value = float(math.sqrt(variance_value))
@@ -1524,9 +1487,7 @@ def run_fast_zonal_statistics_test_case(
             pct_values = np.percentile(
                 valid_values.astype(np.float64, copy=False), percentile_list
             ).tolist()
-            for percentile_key, percentile_value in zip(
-                percentile_values, pct_values
-            ):
+            for percentile_key, percentile_value in zip(percentile_values, pct_values):
                 stats[percentile_key] = float(percentile_value)
         else:
             for percentile_key in percentile_values:
@@ -1581,9 +1542,9 @@ def run_fast_zonal_statistics_test_case(
         for polygon_spec in polygons:
             group_value = polygon_spec["group_value"]
             window = polygon_spec["window"]
-            polygon_wkt = polygon_spec.get(
-                "wkt"
-            ) or _pixel_window_to_polygon_wkt(window)
+            polygon_wkt = polygon_spec.get("wkt") or _pixel_window_to_polygon_wkt(
+                window
+            )
             polygon_geometry = ogr.CreateGeometryFromWkt(polygon_wkt)
 
             feature = ogr.Feature(layer_definition)
@@ -1613,9 +1574,7 @@ def run_fast_zonal_statistics_test_case(
 
             for polygon_spec in polygons:
                 group_value = polygon_spec["group_value"]
-                x_offset, y_offset, width_pixels, height_pixels = polygon_spec[
-                    "window"
-                ]
+                x_offset, y_offset, width_pixels, height_pixels = polygon_spec["window"]
                 window_values = raster_values[
                     y_offset : y_offset + height_pixels,
                     x_offset : x_offset + width_pixels,
@@ -1728,11 +1687,7 @@ def pretty_print_zonal_stats_result_with_polygon_values(
         if array_values.size == 0:
             return "[]"
         if np.issubdtype(array_values.dtype, np.integer):
-            return (
-                "["
-                + ", ".join(str(int(v)) for v in array_values.tolist())
-                + "]"
-            )
+            return "[" + ", ".join(str(int(v)) for v in array_values.tolist()) + "]"
         return (
             "["
             + ", ".join(
@@ -1757,9 +1712,7 @@ def pretty_print_zonal_stats_result_with_polygon_values(
         ].ravel()
 
         nodata_mask = _nodata_mask(window_values)
-        valid_values = (
-            window_values[~nodata_mask] if ignore_nodata else window_values
-        )
+        valid_values = window_values[~nodata_mask] if ignore_nodata else window_values
 
         group_to_values_all.setdefault(group_value, []).append(
             window_values.astype(np.float64, copy=False)
@@ -1891,9 +1844,7 @@ def run_test():
     def assert_actual_matches_expected(actual, expected, float_tol=1e-6):
         for gid, exp in expected.items():
             if gid not in actual:
-                raise AssertionError(
-                    f"missing group_id={gid} in actual results"
-                )
+                raise AssertionError(f"missing group_id={gid} in actual results")
             a = actual[gid]
             for k, v in exp.items():
                 if k not in a:
