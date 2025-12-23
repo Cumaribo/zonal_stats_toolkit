@@ -1236,6 +1236,7 @@ def run_zonal_stats_job(
         if op.startswith("p") and op[1:].replace(".", "", 1).isdigit()
     ]
 <<<<<<< HEAD
+<<<<<<< HEAD
 
     op_to_key = {
         "avg": "avg",
@@ -1258,6 +1259,9 @@ def run_zonal_stats_job(
 
 =======
 >>>>>>> 5cee83f (re #4 allowing all percentile values)
+=======
+    stats_task_list = []
+>>>>>>> 81f8f96 (re #4 parallelizing it)
     for raster_path in base_raster_path_list:
         stem = raster_path.stem
         raster_stems.append(stem)
@@ -1278,6 +1282,9 @@ def run_zonal_stats_job(
             store_result=True,
             task_name=f"stats for {tag}",
         )
+        stats_task_list.append((stem, stats_task))
+
+    for stem, stats_task in stats_task_list:
         stats = stats_task.get()
         raster_stats_by_stem[stem] = stats
         all_groups.update(stats.keys())
