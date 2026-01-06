@@ -1,3 +1,6 @@
+import glob
+import os
+
 from datasketches import kll_floats_sketch
 from osgeo import gdal
 from collections import defaultdict
@@ -82,43 +85,46 @@ def make_linear_decay_kernel(base_raster_path, radius_m, kernel_path):
         dst.write(kernel, 1)
 
 
-base_raster_path = "N_export_Colombia_2020.tif"
-kernel_path = f"kernel_{Path(base_raster_path).stem}.tif"
-radius_m = 10_000
-heatmap_raster_path = f"heatmap_{Path(base_raster_path).stem}.tif"
-make_linear_decay_kernel(base_raster_path, radius_m, kernel_path)
+output_dir = "hotspot_output"
+os.makedirs(output_dir, exist_ok=True)
+for base_raster_path in glob.glob("./jeronimodata/data_to_summarize/*.tif"):
+    kernel_path = f"kernel_{Path(base_raster_path).stem}.tif"
+    radius_m = 10_000
+    heatmap_raster_path = f"heatmap_{Path(base_raster_path).stem}.tif"
+    make_linear_decay_kernel(base_raster_path, radius_m, kernel_path)
 
-geoprocessing.convolve_2d(
-    (base_raster_path, 1),
-    (kernel_path, 1),
-    heatmap_raster_path,
-    ignore_nodata_and_edges=True,
-    mask_nodata=True,
-    normalize_kernel=False,
-    working_dir="./",
-)
-
-
-for quantile in [0.9, 0.95, 0.99, 0.999]:
-    sketch = kll_floats_sketch(k=200)
-    nodata = geoprocessing.get_raster_info(heatmap_raster_path)["nodata"][0]
-    for _, array_block in geoprocessing.iterblocks((heatmap_raster_path, 1)):
-        if nodata is not None:
-            array_block = array_block[(array_block != nodata) & (array_block > 0)]
-        sketch.update(array_block.astype(np.float32, copy=False).ravel())
-
-    threshold = sketch.get_quantile(quantile)
-    print(f"THRESHOLD: {threshold}")
-
-    def local_op(array):
-        return array >= threshold
-
-    hotspot_raster_path = f"hotspots_{Path(base_raster_path).stem}_{quantile:.4}.tif"
-
-    geoprocessing.raster_calculator(
-        [(heatmap_raster_path, 1)],
-        local_op,
-        hotspot_raster_path,
-        gdal.GDT_Byte,
-        2,
+    geoprocessing.convolve_2d(
+        (base_raster_path, 1),
+        (kernel_path, 1),
+        heatmap_raster_path,
+        ignore_nodata_and_edges=True,
+        mask_nodata=True,
+        normalize_kernel=False,
+        working_dir="./",
     )
+
+    for quantile in [0.9, 0.95, 0.99, 0.999]:
+        sketch = kll_floats_sketch(k=200)
+        nodata = geoprocessing.get_raster_info(heatmap_raster_path)["nodata"][0]
+        for _, array_block in geoprocessing.iterblocks((heatmap_raster_path, 1)):
+            if nodata is not None:
+                array_block = array_block[(array_block != nodata) & (array_block > 0)]
+            sketch.update(array_block.astype(np.float32, copy=False).ravel())
+
+        threshold = sketch.get_quantile(quantile)
+        print(f"THRESHOLD: {threshold}")
+
+        def local_op(array):
+            return array >= threshold
+
+        hotspot_raster_path = (
+            f"hotspots_{Path(base_raster_path).stem}_{quantile:.4}.tif"
+        )
+
+        geoprocessing.raster_calculator(
+            [(heatmap_raster_path, 1)],
+            local_op,
+            hotspot_raster_path,
+            gdal.GDT_Byte,
+            2,
+        )
