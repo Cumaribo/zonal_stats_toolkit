@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ARG CACHEBUST=3
 
-ARG WORKDIR=/usr/local/wwf_es_beneficiaries
+ARG WORKDIR=/workdir
 ENV WORKDIR=${WORKDIR}
 WORKDIR ${WORKDIR}
 
