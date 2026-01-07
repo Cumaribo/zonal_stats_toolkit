@@ -105,7 +105,8 @@ for base_raster_path in glob.glob("./jeronimodata/data_to_summarize/*.tif"):
         continue
 
     raster_info = geoprocessing.get_raster_info(base_raster_path)
-    if 1 in raster_info["block_size"]:
+    block_size = raster_info["block_size"]
+    if block_size[0] != block_size[1]:
         # not a square blocksize
         geoprocessing.align_and_resize_raster_stack(
             [base_raster_path],
