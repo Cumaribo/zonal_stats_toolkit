@@ -1,3 +1,4 @@
+import shutil
 import glob
 import os
 
@@ -88,27 +89,44 @@ def make_linear_decay_kernel(base_raster_path, radius_m, kernel_path):
 output_dir = "hotspot_output"
 os.makedirs(output_dir, exist_ok=True)
 for base_raster_path in glob.glob("./jeronimodata/data_to_summarize/*.tif"):
-    kernel_path = f"kernel_{Path(base_raster_path).stem}.tif"
+    base_raster_path = Path(base_raster_path)
+    stem = base_raster_path.stem
+
     radius_m = 10_000
-    heatmap_raster_path = f"heatmap_{Path(base_raster_path).stem}.tif"
-    make_linear_decay_kernel(base_raster_path, radius_m, kernel_path)
+
+    tmp_dir = Path("/tmp")
+    tmp_base_raster_path = tmp_dir / base_raster_path.name
+    tmp_kernel_path = tmp_dir / f"kernel_{stem}.tif"
+    tmp_heatmap_raster_path = tmp_dir / f"heatmap_{stem}.tif"
+
+    final_heatmap_raster_path = base_raster_path.with_name(f"heatmap_{stem}.tif")
+
+    shutil.copy2(base_raster_path, tmp_base_raster_path)
+
+    make_linear_decay_kernel(str(tmp_base_raster_path), radius_m, str(tmp_kernel_path))
 
     geoprocessing.convolve_2d(
-        (base_raster_path, 1),
-        (kernel_path, 1),
-        heatmap_raster_path,
+        (str(tmp_base_raster_path), 1),
+        (str(tmp_kernel_path), 1),
+        str(tmp_heatmap_raster_path),
         ignore_nodata_and_edges=True,
         mask_nodata=True,
         normalize_kernel=False,
-        working_dir="./",
+        working_dir=str(tmp_dir),
+        largest_block=2**20,
     )
+
+    heatmap_raster_path = tmp_heatmap_raster_path
 
     for quantile in [0.9, 0.95, 0.99, 0.999]:
         sketch = kll_floats_sketch(k=200)
-        nodata = geoprocessing.get_raster_info(heatmap_raster_path)["nodata"][0]
-        for _, array_block in geoprocessing.iterblocks((heatmap_raster_path, 1)):
+        nodata = geoprocessing.get_raster_info(str(heatmap_raster_path))["nodata"][0]
+
+        for _, array_block in geoprocessing.iterblocks((str(heatmap_raster_path), 1)):
             if nodata is not None:
                 array_block = array_block[(array_block != nodata) & (array_block > 0)]
+            else:
+                array_block = array_block[array_block > 0]
             sketch.update(array_block.astype(np.float32, copy=False).ravel())
 
         threshold = sketch.get_quantile(quantile)
@@ -117,14 +135,26 @@ for base_raster_path in glob.glob("./jeronimodata/data_to_summarize/*.tif"):
         def local_op(array):
             return array >= threshold
 
-        hotspot_raster_path = (
-            f"hotspots_{Path(base_raster_path).stem}_{quantile:.4}.tif"
+        final_hotspot_raster_path = base_raster_path.with_name(
+            f"hotspots_{stem}_{quantile:.4}.tif"
         )
+        tmp_hotspot_raster_path = tmp_dir / final_hotspot_raster_path.name
 
         geoprocessing.raster_calculator(
-            [(heatmap_raster_path, 1)],
+            [(str(heatmap_raster_path), 1)],
             local_op,
-            hotspot_raster_path,
+            str(tmp_hotspot_raster_path),
             gdal.GDT_Byte,
             2,
         )
+
+        print(f"copying {tmp_hotspot_raster_path} to {final_hotspot_raster_path}")
+        shutil.copy2(tmp_hotspot_raster_path, final_hotspot_raster_path)
+        tmp_hotspot_raster_path.unlink()
+
+    tmp_base_raster_path.unlink()
+    tmp_kernel_path.unlink(missing_ok=True)
+
+    print(f"copying {tmp_heatmap_raster_path} to {final_heatmap_raster_path}")
+    shutil.copy2(tmp_heatmap_raster_path, final_heatmap_raster_path)
+    tmp_heatmap_raster_path.unlink()
