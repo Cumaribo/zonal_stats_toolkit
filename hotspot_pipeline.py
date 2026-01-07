@@ -99,9 +99,23 @@ for base_raster_path in glob.glob("./jeronimodata/data_to_summarize/*.tif"):
     tmp_kernel_path = tmp_dir / f"kernel_{stem}.tif"
     tmp_heatmap_raster_path = tmp_dir / f"heatmap_{stem}.tif"
 
-    final_heatmap_raster_path = base_raster_path.with_name(f"heatmap_{stem}.tif")
+    final_heatmap_raster_path = Path(output_dir) / f"heatmap_{stem}.tif"
+    if final_heatmap_raster_path.exists():
+        # i already made it
+        continue
 
-    shutil.copy2(base_raster_path, tmp_base_raster_path)
+    raster_info = geoprocessing.get_raster_info(base_raster_path)
+    if 1 in raster_info["block_size"]:
+        # not a square blocksize
+        geoprocessing.align_and_resize_raster_stack(
+            [base_raster_path],
+            [tmp_base_raster_path],
+            ["near"],
+            raster_info["pixel_size"],
+            "intersection",
+        )
+    else:
+        shutil.copy2(base_raster_path, tmp_base_raster_path)
 
     make_linear_decay_kernel(str(tmp_base_raster_path), radius_m, str(tmp_kernel_path))
 
@@ -135,9 +149,10 @@ for base_raster_path in glob.glob("./jeronimodata/data_to_summarize/*.tif"):
         def local_op(array):
             return array >= threshold
 
-        final_hotspot_raster_path = base_raster_path.with_name(
-            f"hotspots_{stem}_{quantile:.4}.tif"
+        final_hotspot_raster_path = (
+            Path(output_dir) / f"hotspots_{stem}_{quantile:.4}.tif"
         )
+
         tmp_hotspot_raster_path = tmp_dir / final_hotspot_raster_path.name
 
         geoprocessing.raster_calculator(
