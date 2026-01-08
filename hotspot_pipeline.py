@@ -13,12 +13,35 @@ import rasterio
 from rasterio.transform import from_origin
 from pyproj import CRS, Geod, Transformer
 
+
 from ecoshard import geoprocessing
 
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(name)s %(filename)s:%(lineno)d: %(message)s",
 )
+
+
+def square_and_define_nodata(base_raster_path, target_raster_path):
+    raster_info = geoprocessing.get_raster_info(base_raster_path)
+    nodata = raster_info["nodata"][0]
+    print(nodata)
+    if nodata is None or not np.isfinite(nodata):
+        nodata = -9999
+
+    def nan_to_nodata(val):
+        invalid_mask = ~np.isfinite(val)
+        val[invalid_mask] = nodata
+        return val
+
+    geoprocessing.raster_calculator(
+        [(str(base_raster_path), 1)],
+        nan_to_nodata,
+        target_raster_path,
+        raster_info["datatype"],
+        nodata,
+        allow_different_blocksize=True,
+    )
 
 
 def make_linear_decay_kernel(base_raster_path, radius_m, kernel_path):
@@ -86,91 +109,103 @@ def make_linear_decay_kernel(base_raster_path, radius_m, kernel_path):
         dst.write(kernel, 1)
 
 
-output_dir = "hotspot_output"
-os.makedirs(output_dir, exist_ok=True)
-for base_raster_path in glob.glob("./jeronimodata/data_to_summarize/*.tif"):
-    base_raster_path = Path(base_raster_path)
-    stem = base_raster_path.stem
+def main():
+    output_dir = "hotspot_output"
+    os.makedirs(output_dir, exist_ok=True)
+    for base_raster_path in glob.glob("./jeronimodata/data_to_summarize/*.tif"):
+        base_raster_path = Path(base_raster_path)
+        stem = base_raster_path.stem
 
-    radius_m = 10_000
+        radius_m = 10_000
 
-    tmp_dir = Path("/tmp")
-    tmp_base_raster_path = tmp_dir / base_raster_path.name
-    tmp_kernel_path = tmp_dir / f"kernel_{stem}.tif"
-    tmp_heatmap_raster_path = tmp_dir / f"heatmap_{stem}.tif"
+        tmp_dir = Path("/tmp")
+        tmp_heatmap_raster_path = tmp_dir / f"heatmap_{stem}.tif"
 
-    final_heatmap_raster_path = Path(output_dir) / f"heatmap_{stem}.tif"
-    if final_heatmap_raster_path.exists():
-        # i already made it
-        continue
+        final_heatmap_raster_path = Path(output_dir) / f"heatmap_{stem}.tif"
+        if final_heatmap_raster_path.exists():
+            print(f"already created {final_heatmap_raster_path}")
+            continue
 
-    raster_info = geoprocessing.get_raster_info(base_raster_path)
-    block_size = raster_info["block_size"]
-    if block_size[0] != block_size[1]:
-        # not a square blocksize
-        geoprocessing.align_and_resize_raster_stack(
-            [base_raster_path],
-            [tmp_base_raster_path],
-            ["near"],
-            raster_info["pixel_size"],
-            "intersection",
-        )
-    else:
+        raster_info = geoprocessing.get_raster_info(base_raster_path)
+        block_size = raster_info["block_size"]
+
+        tmp_base_raster_path = Path(tmp_dir) / base_raster_path.name
         shutil.copy2(base_raster_path, tmp_base_raster_path)
 
-    make_linear_decay_kernel(str(tmp_base_raster_path), radius_m, str(tmp_kernel_path))
+        if block_size[0] != block_size[1]:
+            squared_tmp_base_raster_path = tmp_base_raster_path.with_name(
+                f"{tmp_base_raster_path.stem}_squared{tmp_base_raster_path.suffix}"
+            )
+            square_and_define_nodata(tmp_base_raster_path, squared_tmp_base_raster_path)
+            tmp_base_raster_path.unlink()
+            tmp_base_raster_path = squared_tmp_base_raster_path
 
-    geoprocessing.convolve_2d(
-        (str(tmp_base_raster_path), 1),
-        (str(tmp_kernel_path), 1),
-        str(tmp_heatmap_raster_path),
-        ignore_nodata_and_edges=True,
-        mask_nodata=True,
-        normalize_kernel=False,
-        working_dir=str(tmp_dir),
-        largest_block=2**20,
-    )
-
-    heatmap_raster_path = tmp_heatmap_raster_path
-
-    for quantile in [0.9, 0.95, 0.99, 0.999]:
-        sketch = kll_floats_sketch(k=200)
-        nodata = geoprocessing.get_raster_info(str(heatmap_raster_path))["nodata"][0]
-
-        for _, array_block in geoprocessing.iterblocks((str(heatmap_raster_path), 1)):
-            if nodata is not None:
-                array_block = array_block[(array_block != nodata) & (array_block > 0)]
-            else:
-                array_block = array_block[array_block > 0]
-            sketch.update(array_block.astype(np.float32, copy=False).ravel())
-
-        threshold = sketch.get_quantile(quantile)
-        print(f"THRESHOLD: {threshold}")
-
-        def local_op(array):
-            return array >= threshold
-
-        final_hotspot_raster_path = (
-            Path(output_dir) / f"hotspots_{stem}_{quantile:.4}.tif"
+        tmp_kernel_path = Path(tmp_dir) / f"kernel_{stem}.tif"
+        make_linear_decay_kernel(
+            str(tmp_base_raster_path), radius_m, str(tmp_kernel_path)
         )
 
-        tmp_hotspot_raster_path = tmp_dir / final_hotspot_raster_path.name
-
-        geoprocessing.raster_calculator(
-            [(str(heatmap_raster_path), 1)],
-            local_op,
-            str(tmp_hotspot_raster_path),
-            gdal.GDT_Byte,
-            2,
+        geoprocessing.convolve_2d(
+            (str(tmp_base_raster_path), 1),
+            (str(tmp_kernel_path), 1),
+            str(tmp_heatmap_raster_path),
+            ignore_nodata_and_edges=True,
+            mask_nodata=True,
+            normalize_kernel=False,
+            working_dir=str(tmp_dir),
+            largest_block=2**20,
         )
 
-        print(f"copying {tmp_hotspot_raster_path} to {final_hotspot_raster_path}")
-        shutil.copy2(tmp_hotspot_raster_path, final_hotspot_raster_path)
-        tmp_hotspot_raster_path.unlink()
+        heatmap_raster_path = tmp_heatmap_raster_path
 
-    tmp_base_raster_path.unlink()
-    tmp_kernel_path.unlink(missing_ok=True)
+        for quantile in [0.9, 0.95, 0.99, 0.999]:
+            sketch = kll_floats_sketch(k=200)
+            nodata = geoprocessing.get_raster_info(str(heatmap_raster_path))["nodata"][
+                0
+            ]
 
-    print(f"copying {tmp_heatmap_raster_path} to {final_heatmap_raster_path}")
-    shutil.copy2(tmp_heatmap_raster_path, final_heatmap_raster_path)
-    tmp_heatmap_raster_path.unlink()
+            for _, array_block in geoprocessing.iterblocks(
+                (str(heatmap_raster_path), 1)
+            ):
+                if nodata is not None:
+                    array_block = array_block[
+                        (array_block != nodata) & (array_block > 0)
+                    ]
+                else:
+                    array_block = array_block[array_block > 0]
+                sketch.update(array_block.astype(np.float32, copy=False).ravel())
+
+            threshold = sketch.get_quantile(quantile)
+            print(f"THRESHOLD: {threshold}")
+
+            def local_op(array):
+                return array >= threshold
+
+            final_hotspot_raster_path = (
+                Path(output_dir) / f"hotspots_{stem}_{quantile:.4}.tif"
+            )
+
+            tmp_hotspot_raster_path = tmp_dir / final_hotspot_raster_path.name
+
+            geoprocessing.raster_calculator(
+                [(str(heatmap_raster_path), 1)],
+                local_op,
+                str(tmp_hotspot_raster_path),
+                gdal.GDT_Byte,
+                2,
+            )
+
+            print(f"copying {tmp_hotspot_raster_path} to {final_hotspot_raster_path}")
+            shutil.copy2(tmp_hotspot_raster_path, final_hotspot_raster_path)
+            tmp_hotspot_raster_path.unlink()
+
+        tmp_base_raster_path.unlink()
+        tmp_kernel_path.unlink(missing_ok=True)
+
+        print(f"copying {tmp_heatmap_raster_path} to {final_heatmap_raster_path}")
+        shutil.copy2(tmp_heatmap_raster_path, final_heatmap_raster_path)
+        tmp_heatmap_raster_path.unlink()
+
+
+if __name__ == "__main__":
+    main()
