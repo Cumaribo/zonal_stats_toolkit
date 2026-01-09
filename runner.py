@@ -676,9 +676,10 @@ def fast_zonal_statistics(
     logger.info("created temp working dir: %s", temp_working_dir)
 
     def _raster_nodata_mask(value_array):
+        finite_mask = np.isfinite(value_array)
         if raster_nodata is None:
-            return np.zeros(value_array.shape, dtype=bool)
-        return np.isclose(value_array, raster_nodata)
+            return np.zeros(value_array.shape, dtype=bool) & ~finite_mask
+        return np.isclose(value_array, raster_nodata) & ~finite_mask
 
     try:
         vector_translate_kwargs = {
