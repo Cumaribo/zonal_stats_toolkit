@@ -1,7 +1,7 @@
 # windows:
-# docker build -t zonal_stats_toolkit:latest . && docker run --rm -it -v "%CD%":/usr/local/wwf_es_beneficiaries zonal_stats_toolkit:latest
+# docker build -t zonal_stats_toolkit:latest . && docker run --rm -it -v "%CD%":/workdir zonal_stats_toolkit:latest
 # linux/mac:
-# docker build -t zonal_stats_toolkit:latest . && docker run --rm -it -v `pwd`:/usr/local/wwf_es_beneficiaries zonal_stats_toolkit:latest
+# docker build -t zonal_stats_toolkit:latest . && docker run --rm -it -v `pwd`:/workdir zonal_stats_toolkit:latest
 FROM mambaorg/micromamba:1.4.2-bullseye
 
 # We want all RUN commands to use Bash.
