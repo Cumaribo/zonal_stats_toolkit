@@ -678,8 +678,8 @@ def fast_zonal_statistics(
     def _raster_nodata_mask(value_array):
         finite_mask = np.isfinite(value_array)
         if raster_nodata is None:
-            return np.zeros(value_array.shape, dtype=bool) & ~finite_mask
-        return np.isclose(value_array, raster_nodata) & ~finite_mask
+            return ~finite_mask
+        return np.isclose(value_array, raster_nodata) | ~finite_mask
 
     try:
         vector_translate_kwargs = {
@@ -1388,20 +1388,74 @@ def fast_zonal_statistics(
                     ] = (None if sk.is_empty() else sk.get_quantile(p / 100.0))
 
         for group_value, group_stats in grouped_stats.items():
+            logger.debug(
+                "group=%r start total_count=%r nodata_count=%r sum=%r sumsq=%r keys=%r",
+                group_value,
+                group_stats.get("total_count"),
+                group_stats.get("nodata_count"),
+                group_stats.get("sum"),
+                group_stats.get("sumsq"),
+                sorted(group_stats.keys()),
+            )
+
             valid_count = group_stats["total_count"] - group_stats["nodata_count"]
             group_stats["valid_count"] = valid_count
+            logger.debug("group=%r computed valid_count=%r", group_value, valid_count)
+
             if valid_count > 0:
                 mean_value = group_stats["sum"] / valid_count
-                variance_value = (
-                    group_stats["sumsq"] / valid_count - mean_value * mean_value
+                logger.debug(
+                    "group=%r mean_value=%r (sum=%r / valid_count=%r)",
+                    group_value,
+                    mean_value,
+                    group_stats["sum"],
+                    valid_count,
                 )
+
+                variance_value = (group_stats["sumsq"] / valid_count) - (
+                    mean_value * mean_value
+                )
+                logger.debug(
+                    "group=%r raw variance_value=%r (sumsq/valid_count=%r - mean^2=%r)",
+                    group_value,
+                    variance_value,
+                    group_stats["sumsq"] / valid_count,
+                    mean_value * mean_value,
+                )
+
                 if variance_value < 0:
+                    logger.debug(
+                        "group=%r variance_value < 0, clamping to 0.0 (was %r)",
+                        group_value,
+                        variance_value,
+                    )
                     variance_value = 0.0
-                group_stats["stdev"] = float(np.sqrt(variance_value))
+
+                stdev_value = float(np.sqrt(variance_value))
+                group_stats["stdev"] = stdev_value
+                logger.debug(
+                    "group=%r stdev=%r sqrt(variance_value=%r)",
+                    group_value,
+                    stdev_value,
+                    variance_value,
+                )
             else:
                 group_stats["stdev"] = None
+                logger.debug(
+                    "group=%r stdev=None because valid_count <= 0 (total_count=%r nodata_count=%r)",
+                    group_value,
+                    group_stats["total_count"],
+                    group_stats["nodata_count"],
+                )
+
+            logger.debug(
+                "group=%r deleting sumsq (current sumsq=%r)",
+                group_value,
+                group_stats.get("sumsq"),
+            )
             del group_stats["sumsq"]
 
+<<<<<<< HEAD
 <<<<<<< HEAD
     for group_value, g in grouped_stats.items():
         valid_count = g["count"] - g["nodata_count"]
@@ -1427,6 +1481,15 @@ def fast_zonal_statistics(
     logger.info("fast_zonal_statistics done")
     return dict(grouped_stats)
 =======
+=======
+            logger.debug(
+                "group=%r end valid_count=%r stdev=%r keys_now=%r",
+                group_value,
+                group_stats.get("valid_count"),
+                group_stats.get("stdev"),
+                sorted(group_stats.keys()),
+            )
+>>>>>>> 1bfc368 (got the nan logic backwards)
         logger.info("grouping done | groups=%d", len(grouped_stats))
         logger.info("fast_zonal_statistics done")
         return dict(grouped_stats)
