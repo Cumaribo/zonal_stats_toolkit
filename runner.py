@@ -5,6 +5,7 @@ import argparse
 import collections
 import configparser
 import csv
+import glob
 import logging
 import os
 import shutil
@@ -181,10 +182,10 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
                 f"[job:{tag}] base_raster_pattern tag not found"
             )
         base_raster_path_list = [
-            path
+            Path(path)
             for pattern in base_raster_pattern.split(",")
             if pattern.strip()
-            for path in Path(".").glob(pattern.strip())
+            for path in glob.glob(pattern.strip())
         ]
         if not base_raster_path_list:
             raise FileNotFoundError(
@@ -856,6 +857,7 @@ def fast_zonal_statistics(
             "sum": 0.0,
             "sumsq": 0.0,
             "stdev": None,
+            "avg": None,
             **{k: None for k in percentile_keys},
         }
     )
@@ -908,12 +910,14 @@ def fast_zonal_statistics(
         g["valid_count"] = valid_count
         if valid_count > 0:
             mean = g["sum"] / valid_count
+            g["avg"] = mean
             var = g["sumsq"] / valid_count - mean * mean
             if var < 0:
                 var = 0.0
             g["stdev"] = float(np.sqrt(var))
         else:
             g["stdev"] = None
+            g["avg"] = None
         del g["sumsq"]
 
     logger.info("grouping done | groups=%d", len(grouped_stats))
@@ -940,13 +944,31 @@ def run_zonal_stats_job(
     raster_stems = []
     raster_stats_by_stem = {}
     all_groups = set()
-    stat_fields = None
 
     percentile_list = [
         float(op[1:])
         for op in operations
         if op.startswith("p") and op[1:].replace(".", "", 1).isdigit()
     ]
+
+    op_to_key = {
+        "avg": "avg",
+        "stdev": "stdev",
+        "min": "min",
+        "max": "max",
+        "sum": "sum",
+        "total_count": "count",
+        "valid_count": "valid_count",
+        "nodata_count": "nodata_count",
+    }
+    stat_fields = []
+    for op in operations:
+        if op in op_to_key:
+            stat_fields.append(op_to_key[op])
+        elif op.startswith("p") and op[1:].replace(".", "", 1).isdigit():
+            val = float(op[1:])
+            key = f"p{int(val) if val.is_integer() else val}"
+            stat_fields.append(key)
 
     for raster_path in base_raster_path_list:
         stem = raster_path.stem
@@ -964,11 +986,6 @@ def run_zonal_stats_job(
         )
         raster_stats_by_stem[stem] = stats
         all_groups.update(stats.keys())
-        if stat_fields is None and stats:
-            stat_fields = list(next(iter(stats.values())).keys())
-
-    if stat_fields is None:
-        stat_fields = ["min", "max", "count", "nodata_count", "sum"]
 
     parts = [p.strip() for p in row_col_order.split(",") if p.strip()]
     if parts == ["agg_field", "base_raster"]:
