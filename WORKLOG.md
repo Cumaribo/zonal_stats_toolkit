@@ -15,3 +15,7 @@ This file tracks the work done on the `zonal_stats_toolkit` project.
 *   **Fixed Output Columns:** Modified `runner.py` to:
     *   Include `avg` in the calculated statistics.
     *   Filter the output CSV columns based on the requested `operations` in the configuration, removing unrequested fields like `min` and `max`.
+*   **Fixed Path Resolution:** Updated `runner.py` to resolve paths relative to the configuration file, fixing `FileNotFoundError` when running from different directories.
+*   **Fixed NaN Handling:** Modified `runner.py` to treat `NaN` values in floating-point rasters as NoData, resolving the issue where stats returned `NaN`.
+*   **Improved Error Handling:** Added detailed diagnostic messages for `PermissionError` in `runner.py` to help debug Docker user/group permission mismatches.
+*   **Docker Execution:** Successfully ran the full `global_ncp_change_analysis.ini` pipeline inside the container (running as root to bypass host permission issues).

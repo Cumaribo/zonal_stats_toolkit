@@ -128,6 +128,7 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
 
     config = configparser.ConfigParser(interpolation=None)
     config.read(cfg_path)
+    cfg_dir = cfg_path.resolve().parent
 
     if "project" not in config:
         raise ValueError("Missing [project] section")
@@ -168,12 +169,28 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
 
     job_list = []
     for tag, job in jobs_sections:
-        agg_vector = Path(job.get("agg_vector", "").strip())
-        if not agg_vector:
+        agg_vector_raw = job.get("agg_vector", "").strip()
+        if not agg_vector_raw:
             raise ValueError(f"[job:{tag}] missing agg_vector")
+
+        agg_vector = Path(agg_vector_raw)
+        if not agg_vector.is_absolute():
+            agg_vector = cfg_dir / agg_vector
+
         if not agg_vector.exists():
             raise FileNotFoundError(
                 f"[job:{tag}] agg_vector not found: {agg_vector}"
+            )
+
+        if not agg_vector.is_file():
+            raise IsADirectoryError(f"[job:{tag}] agg_vector is not a file: {agg_vector}")
+
+        if not os.access(agg_vector, os.R_OK):
+            stat_info = agg_vector.stat()
+            raise PermissionError(
+                f"[job:{tag}] Permission denied reading agg_vector: {agg_vector}. "
+                f"Current user: {os.getuid()}, File owner: {stat_info.st_uid}, Mode: {oct(stat_info.st_mode)}. "
+                "Check file permissions."
             )
 
         base_raster_pattern = job.get("base_raster_pattern", "").strip()
@@ -181,12 +198,20 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
             raise FileNotFoundError(
                 f"[job:{tag}] base_raster_pattern tag not found"
             )
-        base_raster_path_list = [
-            Path(path)
-            for pattern in base_raster_pattern.split(",")
-            if pattern.strip()
-            for path in glob.glob(pattern.strip())
-        ]
+
+        base_raster_path_list = []
+        for pattern in base_raster_pattern.split(","):
+            pattern = pattern.strip()
+            if not pattern:
+                continue
+            if not Path(pattern).is_absolute():
+                full_pattern = str(cfg_dir / pattern)
+            else:
+                full_pattern = pattern
+            base_raster_path_list.extend(
+                [Path(p) for p in glob.glob(full_pattern)]
+            )
+
         if not base_raster_path_list:
             raise FileNotFoundError(
                 f"[job:{tag}] no files found at {base_raster_pattern}"
@@ -235,8 +260,33 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
                 )
         outdir = global_output_dir
         workdir = global_work_dir / Path(tag)
-        outdir.mkdir(parents=True, exist_ok=True)
-        workdir.mkdir(parents=True, exist_ok=True)
+        try:
+            outdir.mkdir(parents=True, exist_ok=True)
+            workdir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            failed_path = Path(e.filename) if e.filename else workdir
+            # Determine which path to inspect for permissions
+            if failed_path.exists():
+                target_path = failed_path
+                msg_prefix = "Permission denied accessing existing directory"
+            else:
+                target_path = failed_path.resolve().parent
+                msg_prefix = "Permission denied creating directory in"
+
+            try:
+                stat_info = target_path.stat()
+                diag_info = (
+                    f"Current user: {os.getuid()}, "
+                    f"Target owner: {stat_info.st_uid}, "
+                    f"Mode: {oct(stat_info.st_mode)}"
+                )
+            except Exception:
+                diag_info = "Could not stat target path."
+
+            raise PermissionError(
+                f"{msg_prefix}: {failed_path}. {diag_info}. "
+                "Check directory permissions."
+            ) from e
 
         job_list.append(
             {
@@ -339,6 +389,14 @@ def fast_zonal_statistics(
     else:
         logger.info(
             "vector SRS missing/unknown | forcing reprojection to raster SRS"
+        )
+
+    if working_dir and not os.access(working_dir, os.W_OK):
+        stat_info = os.stat(working_dir)
+        raise PermissionError(
+            f"Permission denied writing to working_dir: {working_dir}. "
+            f"Current user: {os.getuid()}, Directory owner: {stat_info.st_uid}, Mode: {oct(stat_info.st_mode)}. "
+            "Check directory permissions."
         )
 
     temp_working_dir = tempfile.mkdtemp(dir=working_dir)
@@ -651,6 +709,9 @@ def fast_zonal_statistics(
                         masked_clipped_block.shape, dtype=bool
                     )
 
+                if np.issubdtype(masked_clipped_block.dtype, np.floating):
+                    clipped_nodata_mask |= np.isnan(masked_clipped_block)
+
                 nodata_count = np.count_nonzero(clipped_nodata_mask)
                 aggregate_stats[agg_fid]["count"] += total_count
                 aggregate_stats[agg_fid]["nodata_count"] += nodata_count
@@ -775,6 +836,9 @@ def fast_zonal_statistics(
                 unset_fid_nodata_mask = np.zeros(
                     unset_fid_block.shape, dtype=bool
                 )
+
+            if np.issubdtype(unset_fid_block.dtype, np.floating):
+                unset_fid_nodata_mask |= np.isnan(unset_fid_block)
 
             if ignore_nodata:
                 valid_unset_fid_block = unset_fid_block[~unset_fid_nodata_mask]

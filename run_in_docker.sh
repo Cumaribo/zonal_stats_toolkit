@@ -18,7 +18,7 @@ docker build -t "$IMAGE_NAME" .
 # Run the script in the container
 echo "Running script in docker container..."
 docker run --rm -it \
-    -v "$(pwd)":_build/ \
+    -v "$(pwd)":"$WORKDIR" \
     --user "$(id -u):$(id -g)" \
     "$IMAGE_NAME" \
     python runner.py "$@"
