@@ -676,7 +676,14 @@ def fast_zonal_statistics(
     logger.info("created temp working dir: %s", temp_working_dir)
 
     def _raster_nodata_mask(value_array):
-        finite_mask = np.isfinite(value_array)
+        upper_limit = np.finfo(np.float32).max / 100
+        lower_limit = np.finfo(np.float32).min / 100
+        finite_mask = (
+            np.isfinite(value_array)
+            & (value_array < upper_limit)
+            & (value_array > lower_limit)
+        )
+
         if raster_nodata is None:
             return ~finite_mask
         return np.isclose(value_array, raster_nodata) | ~finite_mask
