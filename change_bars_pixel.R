@@ -93,7 +93,8 @@ tt_analysis <- tt_ch %>%
     names_pattern = "(mean|stdev|valid_count)_(.*)"
   ) %>%
   mutate(se = stdev / sqrt(valid_count)) %>%
-  filter(!is.na(mean), mean != 0) # Focus on meaningful changes
+  filter(!is.na(mean), mean != 0) %>% 
+  filter(service!="usle_diff_1992_2020")# Focus on meaningful changes
 
 # Save wide version for Becky/Rich (Mean and SE columns)
 tt_final_wide <- tt_analysis %>%
@@ -104,7 +105,8 @@ tt_final_wide <- tt_analysis %>%
     names_glue = "{.value}_{service}"
   )
 
-write_csv(tt_final_wide, "final_ES_change_analysis.csv")
+write_csv(tt_final_wide, paste(data_dir_zonal, "final_ES_change_analysis.csv", sep="/"))
+
 
 # --- 4. VISUALIZATION ---
 
