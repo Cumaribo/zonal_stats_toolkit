@@ -2,6 +2,12 @@
 
 This file tracks the work done on the `zonal_stats_toolkit` project.
 
+## 2026-01-20
+
+*   Recalculated the sediment and nitrogen retention ratio files to address an artifact causing atypical values and `NaN` outputs. The script `/home/jeronimo/projects/global_NCP/Python_scripts/calculate_ratios.py` was used to regenerate the ratios and their differences. Now re-running zonal statistics for these new ratios.
+*   **Disk Space Management:** Investigated and resolved critical disk space errors (`disk usage exceeds 95%`) by identifying that `workdir/` contains temporary files that are not cleaned up automatically. Emptied the `workdir/` to allow the pipeline to run.
+*   **Permissions Fix:** Resolved `PermissionError` issues on `workdir/` and `output/` directories by changing their ownership from `root` to the active user (`1001`), allowing the script to create necessary files and directories.
+
 ## 2026-01-12
 
 *   **Initial setup:** Cloned the repository.

@@ -1,6 +1,5 @@
 
 # Ignore data directory
 data/
-.placeholder
 workdir/
 docker_config/
