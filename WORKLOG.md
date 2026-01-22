@@ -2,6 +2,16 @@
 
 This file tracks the work done on the `zonal_stats_toolkit` project.
 
+## 2026-01-22
+
+*   **Visualization Refinement:** Updated `change_bars_pixel.R` to improve plot readability for country-level data.
+    *   Implemented filtering to show only the top 5 and bottom 5 countries per service.
+    *   Adjusted facet scales to `free` to remove empty rows for countries with no data in specific services.
+    *   Enforced a fixed 3-column layout with specific service ordering, keeping placeholders for missing services.
+    *   Fixed variable name cleaning logic (e.g., handling "polllination" typo).
+    *   Changed Y-axis sorting to alphabetical (inverted) for consistent reading.
+    *   Optimized facet scales: shared Y-axis for standard groupings, free Y-axis for country lists.
+
 ## 2026-01-20
 
 *   Recalculated the sediment and nitrogen retention ratio files to address an artifact causing atypical values and `NaN` outputs. The script `/home/jeronimo/projects/global_NCP/Python_scripts/calculate_ratios.py` was used to regenerate the ratios and their differences. Now re-running zonal statistics for these new ratios.

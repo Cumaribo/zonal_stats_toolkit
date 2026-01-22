@@ -10,18 +10,23 @@ source("R/paths.R")
 # Define a single source of truth for name cleaning to use throughout the script
 clean_service_names <- function(column_names) {
   column_names %>%
-    # Legacy cleaning (kept for reference)
-    # str_remove_all("_md5_[a-z0-9]+|_[0-9]{8}_[0-9]{6}") %>%
-    # str_remove_all("_tnc|_esa|_value|_compressed|_mar|mar|_lspop2019|_ESA|ine_mod_ESA") %>%
-    # str_replace_all("_Rt_change_coastal_risk.*", "_coastal_risk") %>%
-    # str_replace_all("_Service_change_coastal_risk.*", "_coastal_service") %>%
-    # str_replace_all("_nature_access_.*", "_nature_access") %>%
-    # str_replace_all("_Nitrogen_Export_diff", "_nitrogen_export") %>%
-    # str_replace_all("_Pollination_diff", "_pollination") %>%
-    # str_replace_all("_Sediment_Export_diff", "_sediment_export") %>%
-    
-    # Simplified cleaning as column names are now cleaner
     tolower() %>%
+    # Remove common suffixes to simplify matching
+    str_remove_all("_diff.*|_change.*|_1992_2020.*") %>%
+    # Remove specific suffixes found in data
+    str_remove_all("_esa") %>%
+    
+    # Map to desired service names (Longer specific matches first)
+    str_replace_all("coastal_risk_reduction_ratio", "C_Risk_Red_Ratio") %>%
+    str_replace_all("n_retention_ratio", "N_Ret_Ratio") %>%
+    str_replace_all("sediment_retention_ratio", "Sed_Ret_Ratio") %>%
+    
+    str_replace_all("coastal_risk", "C_Risk") %>%
+    str_replace_all("n_export", "N_export") %>%
+    str_replace_all("sediment_export", "Sed_export") %>%
+    str_replace_all("polllination|pollination", "Pollination") %>%
+    str_replace_all("nature_access", "Nature_Access") %>%
+    
     str_replace_all("__+", "_") %>%
     str_replace_all("_$", "")
 }
@@ -66,7 +71,8 @@ tt_combined <- map_df(file_list, ~{
 # Keep only relevant summary stats and change variables
 tt_filtered <- tt_combined %>% 
   select(grouping, unit, starts_with(c("mean_", "stdev_", "valid_count_"))) %>%
-  filter(unit != "Antarctica")
+  filter(unit != "Antarctica") %>% filter(unit!= "Seven seas (open ocean)") # Remove Antarctica and Open Ocean
+  
 
 # TODO: Future QAQC - Check if valid pixel counts are consistent between years.
 # We previously implemented a check for >5% difference in valid_count between 1992 and 2020.
@@ -94,7 +100,7 @@ tt_analysis <- tt_ch %>%
   ) %>%
   mutate(se = stdev / sqrt(valid_count)) %>%
   filter(!is.na(mean), mean != 0) %>% 
-  filter(service!="usle_diff_1992_2020")# Focus on meaningful changes
+  filter(!str_detect(service, "usle|n_retention")) # Focus on meaningful changes
 
 # Save wide version for Becky/Rich (Mean and SE columns)
 tt_final_wide <- tt_analysis %>%
@@ -114,6 +120,13 @@ write_csv(tt_final_wide, paste(data_dir_zonal, "final_ES_change_analysis.csv", s
 # TODO: Define a canonical order for 'service' factor levels so they appear consistently across plots (not just alphabetical).
 # TODO: Implement per-facet ordering for 'unit' so that bars are sorted descending by mean within each service panel (currently reorder() sorts globally).
 
+# Define the specific order for the facets
+svc_order <- c(
+  "C_Risk", "N_export", "Sed_export",
+  "C_Risk_Red_Ratio", "N_Ret_Ratio", "Sed_Ret_Ratio",
+  "Pollination", "Nature_Access"
+)
+
 # We use a more specific name 'target_group' to avoid any confusion with column names
 generate_es_plot <- function(target_group) {
   
@@ -121,6 +134,16 @@ generate_es_plot <- function(target_group) {
   data_subset <- tt_analysis %>% 
     filter(grouping == .env$target_group)
   
+  # Filter top 5 and bottom 5 countries per service if grouping contains "country"
+  if (str_detect(target_group, "country")) {
+    message("Filtering top/bottom 5 units for: ", target_group)
+    data_subset <- data_subset %>%
+      group_by(service) %>%
+      arrange(service, desc(mean)) %>%
+      filter(row_number() <= 5 | row_number() > (n() - 5)) %>%
+      ungroup()
+  }
+
   # Skip if no data for this group
   if(nrow(data_subset) == 0) {
     message(paste("No data found for", target_group))
@@ -134,11 +157,19 @@ generate_es_plot <- function(target_group) {
   
   message(paste("Generating plot for:", target_group, "(Units:", num_units, ")"))
   
-  p <- ggplot(data_subset, aes(x = mean, y = reorder(unit, mean), fill = service)) +
+  # Ensure service is a factor with the correct order
+  data_subset <- data_subset %>%
+    mutate(service = factor(service, levels = svc_order))
+  
+  # Use free scales for countries (different units per facet), free_x for others (shared Y axis)
+  facet_scales <- if (str_detect(target_group, "country")) "free" else "free_x"
+  
+  p <- ggplot(data_subset, aes(x = mean, y = unit, fill = service)) +
     geom_col(alpha = 0.7, show.legend = FALSE) +
     geom_errorbar(aes(xmin = mean - se, xmax = mean + se), width = 0.3, color = "grey30", na.rm = TRUE) +
     geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
-    facet_wrap(~service, scales = "free_x") +
+    facet_wrap(~service, scales = facet_scales, ncol = 3, drop = FALSE) +
+    scale_y_discrete(limits = rev) +
     theme_minimal() +
     labs(
       title = paste("Ecosystem Service Change:", target_group),
