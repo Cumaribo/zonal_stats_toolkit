@@ -9,8 +9,11 @@ This file tracks the work done on the `zonal_stats_toolkit` project.
     *   Adjusted facet scales to `free` to remove empty rows for countries with no data in specific services.
     *   Enforced a fixed 3-column layout with specific service ordering, keeping placeholders for missing services.
     *   Fixed variable name cleaning logic (e.g., handling "polllination" typo).
+<<<<<<< HEAD
     *   Changed Y-axis sorting to alphabetical (inverted) for consistent reading.
     *   Optimized facet scales: shared Y-axis for standard groupings, free Y-axis for country lists.
+=======
+>>>>>>> 0ca8ddb2a05d89dcc95589209be88f23c36cae1f
 
 ## 2026-01-20
 
