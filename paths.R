@@ -2,9 +2,6 @@
 # Helper to resolve paths relative to the project root
 
 project_dir <- function(...) {
-  if (requireNamespace("here", quietly = TRUE)) {
-    here::here(...)
-  } else {
-    file.path(getwd(), ...)
-  }
+  # Use getwd() directly to avoid issues when .Rproj is missing
+  file.path(getwd(), ...)
 }

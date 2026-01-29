@@ -4,7 +4,17 @@
 # ==============================================================================
 
 library(tidyverse)
-source("R/paths.R")
+
+# Automatically set working directory to the script's location in RStudio
+if (interactive() && requireNamespace("rstudioapi", quietly = TRUE)) {
+  script_path <- rstudioapi::getActiveDocumentContext()$path
+  if (script_path != "") {
+    setwd(dirname(script_path))
+    message("Working directory set to: ", getwd())
+  }
+}
+
+if (file.exists("Paths.R")) source("Paths.R") else source("paths.R")
 
 # --- 0. CONFIGURATION & HELPERS ---
 # Define a single source of truth for name cleaning to use throughout the script
@@ -19,11 +29,13 @@ clean_service_names <- function(column_names) {
     # Map to desired service names (Longer specific matches first)
     str_replace_all("coastal_risk_reduction_ratio", "C_Risk_Red_Ratio") %>%
     str_replace_all("n_retention_ratio", "N_Ret_Ratio") %>%
-    str_replace_all("sediment_retention_ratio", "Sed_Ret_Ratio") %>%
+    str_replace_all("sediment_retention_ratio|sed_retention_ratio", "Sed_Ret_Ratio") %>%
+    
+    str_replace_all("realized_polllination_on_ag|realized_pollination_on_ag", "Pollination") %>%
     
     str_replace_all("coastal_risk", "C_Risk") %>%
     str_replace_all("n_export", "N_export") %>%
-    str_replace_all("sediment_export", "Sed_export") %>%
+    str_replace_all("sediment_export|sed_export", "Sed_export") %>%
     str_replace_all("polllination|pollination", "Pollination") %>%
     str_replace_all("nature_access", "Nature_Access") %>%
     
@@ -34,14 +46,7 @@ clean_service_names <- function(column_names) {
 # --- 1. DATA INGESTION & STACKING ---
 data_dir_zonal <- project_dir("output")
 
-# Fallback: Check if data is in the OneDrive folder if not found in the repo
-if (!dir.exists(data_dir_zonal)) {
-  onedrive_path <- "C:/Users/JerónimoRodríguezEsc/OneDrive - World Wildlife Fund, Inc/PROJECTS/Global_NCP/data/zonal_analysis_new"
-  if (dir.exists(onedrive_path)) {
-    data_dir_zonal <- onedrive_path
-    message("Using local OneDrive data path: ", data_dir_zonal)
-  }
-}
+message("Using project output directory: ", data_dir_zonal)
 
 if (!dir.exists(data_dir_zonal)) stop("Data directory not found: ", data_dir_zonal)
 
