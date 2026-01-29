@@ -7,11 +7,9 @@ import re
 # Dictionary mapping file prefixes to their merge keys
 MERGE_KEYS = {
     'output/biome': 'WWF_biome',
-    'output/continent': 'continent',
     'output/country': 'nev_name',
     'output/income_grp': 'income_grp',
-    'output/region_un': 'region_un',
-    'output/subregion': 'subregion'
+    'output/region_wb': 'region_wb',
 }
 
 def normalize_columns(df):
