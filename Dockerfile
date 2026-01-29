@@ -9,7 +9,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Create the environment
 RUN micromamba install -y -n base -c conda-forge \
-    python=3.11 gdal rasterio fiona geopandas pip
+    python=3.11 gdal rasterio fiona geopandas rioxarray dask pip
 RUN micromamba shell init -s bash -p /opt/conda
 
 # If needed, ensure the file exists and append your activation line
