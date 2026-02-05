@@ -89,6 +89,35 @@ def _make_logger_callback(message):
 
 
 def parse_and_validate_config(cfg_path: Path) -> dict:
+    """Parse and validate a project configuration file.
+
+    Reads an INI-style configuration file describing a project and one or more
+    jobs, validates its structure and contents, resolves relative paths, and
+    returns a normalized configuration dictionary suitable for downstream
+    processing.
+
+    The configuration must contain a `[project]` section and one or more
+    `[job:<tag>]` sections. Extensive validation is performed on required fields,
+    file paths, layer names, attribute fields, and operation specifications. Most
+    errors result in `ValueError`; missing files raise `FileNotFoundError`.
+
+    Args:
+        cfg_path: Path to the configuration file. Relative paths inside the config
+            are resolved relative to the directory containing this file.
+
+    Returns:
+        A dictionary with two top-level keys:
+            - `project`: A dict containing validated project-level settings
+              (`name`, `global_work_dir`, `global_output_dir`, `log_level`).
+            - `job_list`: A list of dicts, one per job, containing validated and
+              resolved job configuration, including paths, fields, operations, and
+              output locations.
+
+    Raises:
+        ValueError: If the configuration structure is invalid, required fields are
+            missing, values are malformed, or semantic validation fails.
+        FileNotFoundError: If required files or glob patterns resolve to no files.
+    """
     stem = cfg_path.stem
     cfg_dir = cfg_path.parent
 
