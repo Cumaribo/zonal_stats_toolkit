@@ -1600,6 +1600,39 @@ def run_vector_stats_job(
     row_col_order: str,
     job_type: str,
 ):
+    """Run a vector-based statistics job and write aggregated results to CSV.
+
+    For each feature in the base vector datasets, assigns it to the nearest
+    aggregated geometry (after dissolving by `agg_field`) and computes summary
+    statistics over specified attribute fields. Supported statistics include
+    counts, sums, means, standard deviations, minima, maxima, and percentiles.
+    Results are aggregated per dissolved geometry and written to a CSV file.
+
+    All base vectors are reprojected to the aggregation CRS if necessary. Nearest
+    geometry assignment is accelerated using a spatial index and processed in
+    chunks with multithreading.
+
+    Args:
+        base_vector_path_list: List of paths to base vector datasets whose features
+            will be assigned to aggregation geometries.
+        base_vector_fields: List of attribute field names to aggregate from each
+            base vector dataset.
+        agg_vector: Path to the aggregation vector dataset.
+        agg_layer: Name of the layer within `agg_vector` to use.
+        agg_field: Attribute field in the aggregation layer used to dissolve
+            geometries and define aggregation groups.
+        operations: List of operation specifiers (e.g. `"sum"`, `"mean"`,
+            `"min"`, `"max"`, `"stdev"`, `"total_count"`, `"p50"`).
+        output_csv: Path to the output CSV file to write.
+        workdir: Working directory for intermediate job artifacts.
+        tag: Job identifier used for logging and column name suffixes.
+        row_col_order: Output row/column ordering specifier (validated upstream).
+        job_type: Job type string; must be `"vector"`.
+
+    Raises:
+        ValueError: If `job_type` is not `"vector"` or if operation parsing fails.
+        IOError: If vector datasets cannot be read or the output cannot be written.
+    """
     if job_type != "vector":
         raise ValueError(
             f"unexpected job type for run_vector_stats_job: {job_type}"
