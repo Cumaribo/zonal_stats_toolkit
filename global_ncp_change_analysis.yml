@@ -7,41 +7,47 @@ log_level = INFO
 [job:country]
 agg_vector = ./jeronimodata/vector_basedata/cartographic_ee_ee_r264_correspondence.gpkg
 agg_field = nev_name
-operations = avg,stdev,valid_count,total_count,p5,p95
-row_col_order=agg_field,base_raster
-base_raster_pattern=./jeronimodata/Spring/Inspring/*.tif,./jeronimodata/change_calc/*.tif
+operations = mean,stdev,valid_count,total_count,p5,p95
+row_col_order=agg_field,base
+base_raster_pattern=./jeronimodata/data_to_summarize/*.tif
+base_vector_pattern=./jeronimodata/data_to_summarize/coastal_risk_tnc_esa1992_2020_20251224_013825.gpkg[Rt_1992,Rt_2020,Service_1992,Service_2020,Rt_change,Service_change]
 
 [job:continent]
 agg_vector = ./jeronimodata/vector_basedata/cartographic_ee_ee_r264_correspondence.gpkg
 agg_field = continent
-operations = avg,stdev,valid_count,total_count,p5,p95
-row_col_order=agg_field,base_raster
-base_raster_pattern=./jeronimodata/Spring/Inspring/*.tif,./jeronimodata/change_calc/*.tif
+operations = mean,stdev,valid_count,total_count,p5,p95
+row_col_order=agg_field,base
+base_raster_pattern=./jeronimodata/data_to_summarize/*.tif
+base_vector_pattern=./jeronimodata/data_to_summarize/coastal_risk_tnc_esa1992_2020_20251224_013825.gpkg[Rt_1992,Rt_2020,Service_1992,Service_2020,Rt_change,Service_change]
 
 [job:region_un]
 agg_vector = ./jeronimodata/vector_basedata/cartographic_ee_ee_r264_correspondence.gpkg
 agg_field = region_un
-operations = avg,stdev,valid_count,total_count,p5,p95
-row_col_order=agg_field,base_raster
-base_raster_pattern=./jeronimodata/Spring/Inspring/*.tif,./jeronimodata/change_calc/*.tif
+operations = mean,stdev,valid_count,total_count,p5,p95
+row_col_order=agg_field,base
+base_raster_pattern=./jeronimodata/data_to_summarize/*.tif
+base_vector_pattern=./jeronimodata/data_to_summarize/coastal_risk_tnc_esa1992_2020_20251224_013825.gpkg[Rt_1992,Rt_2020,Service_1992,Service_2020,Rt_change,Service_change]
 
 [job:subregion]
 agg_vector = ./jeronimodata/vector_basedata/cartographic_ee_ee_r264_correspondence.gpkg
 agg_field = subregion
-operations = avg,stdev,valid_count,total_count,p5,p95
-row_col_order=agg_field,base_raster
-base_raster_pattern=./jeronimodata/Spring/Inspring/*.tif,./jeronimodata/change_calc/*.tif
+operations = mean,stdev,valid_count,total_count,p5,p95
+row_col_order=agg_field,base
+base_raster_pattern=./jeronimodata/data_to_summarize/*.tif
+base_vector_pattern=./jeronimodata/data_to_summarize/coastal_risk_tnc_esa1992_2020_20251224_013825.gpkg[Rt_1992,Rt_2020,Service_1992,Service_2020,Rt_change,Service_change]
 
 [job:income_grp]
 agg_vector = ./jeronimodata/vector_basedata/cartographic_ee_ee_r264_correspondence.gpkg
 agg_field = income_grp
-operations = avg,stdev,valid_count,total_count,p5,p95
-row_col_order=agg_field,base_raster
-base_raster_pattern=./jeronimodata/Spring/Inspring/*.tif,./jeronimodata/change_calc/*.tif
+operations = mean,stdev,valid_count,total_count,p5,p95
+row_col_order=agg_field,base
+base_raster_pattern=./jeronimodata/data_to_summarize/*.tif
+base_vector_pattern=./jeronimodata/data_to_summarize/coastal_risk_tnc_esa1992_2020_20251224_013825.gpkg[Rt_1992,Rt_2020,Service_1992,Service_2020,Rt_change,Service_change]
 
 [job:biome]
 agg_vector = ./jeronimodata/vector_basedata/Biome.gpkg
 agg_field = WWF_biome
-operations = avg,stdev,valid_count,total_count,p5,p95
-row_col_order=agg_field,base_raster
-base_raster_pattern=./jeronimodata/Spring/Inspring/*.tif,./jeronimodata/change_calc/*.tif
+operations = mean,stdev,valid_count,total_count,p5,p95
+row_col_order=agg_field,base
+base_raster_pattern=./jeronimodata/data_to_summarize/*.tif
+base_vector_pattern=./jeronimodata/data_to_summarize/coastal_risk_tnc_esa1992_2020_20251224_013825.gpkg[Rt_1992,Rt_2020,Service_1992,Service_2020,Rt_change,Service_change]
