@@ -1950,6 +1950,38 @@ def run_zonal_stats_job(
     row_col_order: str,
     task_graph,
 ):
+    """Run a zonal statistics job over raster and/or vector base datasets.
+
+    Computes statistics for one or more base rasters and/or base vector datasets
+    using geometries from an aggregation vector layer. Raster zonal statistics are
+    executed via a task graph using `fast_zonal_statistics`, while vector-based
+    statistics are delegated to `run_vector_stats_job`. Results from all inputs
+    are merged on the aggregation field and written to a single CSV output.
+
+    Both raster- and vector-derived statistics support core operations
+    (e.g. count, sum, mean) and percentile operations (e.g. `p50`). All paths,
+    layers, and fields are assumed to be validated upstream.
+
+    Args:
+        base_raster_path_list: List of raster paths on which to compute zonal
+            statistics. May be empty.
+        base_vector_path_list: List of vector paths on which to compute nearest-
+            geometry vector statistics. May be empty.
+        base_vector_fields: Attribute field names to aggregate from base vectors.
+        agg_vector: Path to the aggregation vector dataset.
+        agg_layer: Name of the layer within `agg_vector` to use for aggregation.
+        agg_field: Attribute field defining aggregation zones/groups.
+        operations: List of operation specifiers (e.g. `"mean"`, `"sum"`, `"p90"`).
+        output_csv: Path to the output CSV file to write.
+        workdir: Working directory for intermediate files and task graph outputs.
+        tag: Job identifier used for temporary filenames and task labeling.
+        row_col_order: Output row/column ordering specifier (validated upstream).
+        task_graph: Task graph instance used to schedule raster and vector jobs.
+
+    Raises:
+        ValueError: If operation parsing fails or required inputs are inconsistent.
+        IOError: If intermediate or output files cannot be read or written.
+    """
     ops = [o.strip().lower() for o in operations if str(o).strip()]
     core_ops = []
     pct_list = []
