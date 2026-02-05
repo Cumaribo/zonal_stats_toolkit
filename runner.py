@@ -171,7 +171,9 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
             parts.append(part)
         return parts
 
-    def _parse_vector_pattern_entry(entry: str, tag: str) -> tuple[str, list[str]]:
+    def _parse_vector_pattern_entry(
+        entry: str, tag: str
+    ) -> tuple[str, list[str]]:
         i = entry.find("[")
         j = entry.rfind("]")
         if i == -1 or j == -1 or j < i:
@@ -195,7 +197,11 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
     def _glob_patterns(pattern_csv: str) -> list[Path]:
         out = []
         for pattern in [p.strip() for p in pattern_csv.split(",") if p.strip()]:
-            pat = pattern if Path(pattern).is_absolute() else str(cfg_dir / pattern)
+            pat = (
+                pattern
+                if Path(pattern).is_absolute()
+                else str(cfg_dir / pattern)
+            )
             out.extend([Path(p) for p in glob.glob(pat)])
         return sorted({p for p in out})
 
@@ -298,8 +304,14 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
             raise ValueError(f"[job:{tag}] missing agg_vector")
         agg_vector = _abs_from_cfg_dir(agg_vector_raw)
         if not agg_vector.exists():
+<<<<<<< HEAD
             raise FileNotFoundError(f"[job:{tag}] agg_vector not found: {agg_vector}")
 >>>>>>> 674dd5d (re #4 fixing configuration file)
+=======
+            raise FileNotFoundError(
+                f"[job:{tag}] agg_vector not found: {agg_vector}"
+            )
+>>>>>>> 518dc17 (re #4 just cleaning up formatting)
 
         agg_field = job.get("agg_field", "").strip()
         if not agg_field:
@@ -308,7 +320,9 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
         ops_raw = job.get("operations", "").strip()
         if not ops_raw:
             raise ValueError(f"[job:{tag}] missing operations")
-        operations = [o.strip().lower() for o in ops_raw.split(",") if o.strip()]
+        operations = [
+            o.strip().lower() for o in ops_raw.split(",") if o.strip()
+        ]
         if not operations:
             raise ValueError(f"[job:{tag}] operations is empty")
 
@@ -348,10 +362,14 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
             p.strip() for p in row_col_order_raw.split(",") if p.strip()
         ]
         if len(row_col_order_parts) != 2:
-            raise ValueError(f"[job:{tag}] row_col_order must have exactly 2 entries")
+            raise ValueError(
+                f"[job:{tag}] row_col_order must have exactly 2 entries"
+            )
         other_tokens = {"base", "base_raster", "base_vector"}
         if "agg_field" not in row_col_order_parts:
-            raise ValueError(f"[job:{tag}] row_col_order must include agg_field")
+            raise ValueError(
+                f"[job:{tag}] row_col_order must include agg_field"
+            )
         other = [t for t in row_col_order_parts if t != "agg_field"]
         if len(other) != 1 or other[0] not in other_tokens:
             raise ValueError(
@@ -613,14 +631,20 @@ def fast_zonal_statistics(
         "sumsq": 0.0,
     }
 
-    def _open_vector_layer(vector_path, layer_name, vector_label, writable=False):
+    def _open_vector_layer(
+        vector_path, layer_name, vector_label, writable=False
+    ):
         open_flags = gdal.OF_VECTOR | (gdal.OF_UPDATE if writable else 0)
         vector_dataset = gdal.OpenEx(str(vector_path), open_flags)
         if vector_dataset is None:
-            raise RuntimeError(f"Could not open {vector_label} vector at {vector_path}")
+            raise RuntimeError(
+                f"Could not open {vector_label} vector at {vector_path}"
+            )
 
         if layer_name is not None:
-            logger.info("selecting %s layer by name: %s", vector_label, layer_name)
+            logger.info(
+                "selecting %s layer by name: %s", vector_label, layer_name
+            )
             vector_layer = vector_dataset.GetLayerByName(layer_name)
         else:
             logger.info("selecting default %s layer", vector_label)
@@ -661,7 +685,9 @@ def fast_zonal_statistics(
         needs_reproject = not source_srs.IsSame(raster_srs)
         logger.info("vector SRS detected | needs_reproject=%s", needs_reproject)
     else:
-        logger.info("vector SRS missing/unknown | forcing reprojection to raster SRS")
+        logger.info(
+            "vector SRS missing/unknown | forcing reprojection to raster SRS"
+        )
 
     if working_dir and not os.access(working_dir, os.W_OK):
         stat_info = os.stat(working_dir)
@@ -672,7 +698,9 @@ def fast_zonal_statistics(
         )
 
     temp_working_dir = tempfile.mkdtemp(dir=working_dir)
-    projected_vector_path = os.path.join(temp_working_dir, "projected_vector.gpkg")
+    projected_vector_path = os.path.join(
+        temp_working_dir, "projected_vector.gpkg"
+    )
     logger.info("created temp working dir: %s", temp_working_dir)
 
     def _raster_nodata_mask(value_array):
@@ -751,7 +779,9 @@ def fast_zonal_statistics(
         )
 
         vector_min_x, vector_max_x, vector_min_y, vector_max_y = vector_extent
-        raster_min_x, raster_min_y, raster_max_x, raster_max_y = raster_bounding_box
+        raster_min_x, raster_min_y, raster_max_x, raster_max_y = (
+            raster_bounding_box
+        )
         has_no_intersection = (
             vector_max_x < raster_min_x
             or vector_min_x > raster_max_x
@@ -850,7 +880,9 @@ def fast_zonal_statistics(
         feature_id_raster_band = feature_id_raster_dataset.GetRasterBand(1)
 
         logger.info("populating disjoint layer features (transaction start)")
-        logger.info("populating disjoint layer features done (transaction commit)")
+        logger.info(
+            "populating disjoint layer features done (transaction commit)"
+        )
 
         rasterize_callback_message = "rasterizing polygons %.1f%% complete %s"
         rasterize_callback = _make_logger_callback(rasterize_callback_message)
@@ -872,7 +904,9 @@ def fast_zonal_statistics(
         group_sketch = None
         if percentile_list:
             group_sketch = defaultdict(lambda: kll_floats_sketch(k=200))
-        for block_index, feature_id_offset in enumerate(feature_id_raster_offsets):
+        for block_index, feature_id_offset in enumerate(
+            feature_id_raster_offsets
+        ):
             block_log_time = _invoke_timed_callback(
                 block_log_time,
                 lambda block_index_value=block_index: logger.info(
@@ -886,7 +920,9 @@ def fast_zonal_statistics(
                 _LOGGING_PERIOD,
             )
 
-            feature_id_block = feature_id_raster_band.ReadAsArray(**feature_id_offset)
+            feature_id_block = feature_id_raster_band.ReadAsArray(
+                **feature_id_offset
+            )
             raster_value_block = raster_band.ReadAsArray(**feature_id_offset)
 
 <<<<<<< HEAD
@@ -1176,7 +1212,9 @@ def fast_zonal_statistics(
                 if window_width_pixels <= 0 or window_height_pixels <= 0:
 =======
             for feature_id in np.unique(block_feature_ids):
-                feature_values = block_raster_values[block_feature_ids == feature_id]
+                feature_values = block_raster_values[
+                    block_feature_ids == feature_id
+                ]
                 total_count = feature_values.size
                 if total_count == 0:
 >>>>>>> 1194c0a (re #4 simplifying overlap even more)
@@ -1197,7 +1235,9 @@ def fast_zonal_statistics(
                 if group_sketch is not None:
                     group_value = feature_id_to_group_value[feature_id]
                     sk = group_sketch[group_value]
-                    sk.update(feature_values.astype(np.float32, copy=False).ravel())
+                    sk.update(
+                        feature_values.astype(np.float32, copy=False).ravel()
+                    )
 
                 block_min_value = np.min(feature_values)
                 block_max_value = np.max(feature_values)
@@ -1205,8 +1245,12 @@ def fast_zonal_statistics(
                     feature_stats["min"] = block_min_value
                     feature_stats["max"] = block_max_value
                 else:
-                    feature_stats["min"] = min(feature_stats["min"], block_min_value)
-                    feature_stats["max"] = max(feature_stats["max"], block_max_value)
+                    feature_stats["min"] = min(
+                        feature_stats["min"], block_min_value
+                    )
+                    feature_stats["max"] = max(
+                        feature_stats["max"], block_max_value
+                    )
 
                 feature_stats["sum"] += np.sum(feature_values)
                 feature_stats["sumsq"] += np.sum(
@@ -1218,7 +1262,9 @@ def fast_zonal_statistics(
         feature_id_raster_band = None
         feature_id_raster_dataset = None
 
-        remaining_unset_feature_ids = feature_id_set.difference(feature_stats_by_id)
+        remaining_unset_feature_ids = feature_id_set.difference(
+            feature_stats_by_id
+        )
         for missing_feature_id in remaining_unset_feature_ids:
             feature_stats_by_id[missing_feature_id]
 
@@ -1359,14 +1405,18 @@ def fast_zonal_statistics(
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 >>>>>>> d0ba290 (re #4 working on adding vector vector interactions)
+=======
+>>>>>>> 518dc17 (re #4 just cleaning up formatting)
                     group_stats["min"] = min(
                         group_stats["min"], feature_stats["min"]
                     )
                     group_stats["max"] = max(
                         group_stats["max"], feature_stats["max"]
                     )
+<<<<<<< HEAD
 <<<<<<< HEAD
 >>>>>>> 9161e18 (re #4 adding a test harness for development)
 =======
@@ -1379,9 +1429,13 @@ def fast_zonal_statistics(
                     group_stats["min"] = min(group_stats["min"], feature_stats["min"])
                     group_stats["max"] = max(group_stats["max"], feature_stats["max"])
 >>>>>>> 05d2dae (re #4 adding a test for the right kind of job type)
+=======
+>>>>>>> 518dc17 (re #4 just cleaning up formatting)
 
         for group_value, group_stats in grouped_stats.items():
-            valid_count = group_stats["total_count"] - group_stats["nodata_count"]
+            valid_count = (
+                group_stats["total_count"] - group_stats["nodata_count"]
+            )
             group_stats["valid_count"] = valid_count
             group_stats["mean"] = (
                 (group_stats["sum"] / valid_count) if valid_count > 0 else None
@@ -1405,9 +1459,13 @@ def fast_zonal_statistics(
                 sorted(group_stats.keys()),
             )
 
-            valid_count = group_stats["total_count"] - group_stats["nodata_count"]
+            valid_count = (
+                group_stats["total_count"] - group_stats["nodata_count"]
+            )
             group_stats["valid_count"] = valid_count
-            logger.debug("group=%r computed valid_count=%r", group_value, valid_count)
+            logger.debug(
+                "group=%r computed valid_count=%r", group_value, valid_count
+            )
 
             if valid_count > 0:
                 mean_value = group_stats["sum"] / valid_count
@@ -1521,10 +1579,14 @@ def run_vector_stats_job(
     job_type: str,
 ):
     if job_type != "vector":
-        raise ValueError(f"unexpected job type for run_vector_stats_job: {job_type}")
+        raise ValueError(
+            f"unexpected job type for run_vector_stats_job: {job_type}"
+        )
 
     logger.info("parsing operations for tag=%s", tag)
-    normalized_operations = [o.strip().lower() for o in operations if str(o).strip()]
+    normalized_operations = [
+        o.strip().lower() for o in operations if str(o).strip()
+    ]
     core_ops = []
     pct_list = []
     for operation in normalized_operations:
@@ -1551,7 +1613,9 @@ def run_vector_stats_job(
     logger.info("agg vector read for tag=%s features=%d", tag, len(agg_gdf))
 
     agg_crs = CRS.from_user_input(agg_gdf.crs) if agg_gdf.crs else None
-    logger.info("agg CRS for tag=%s crs=%s", tag, str(agg_crs) if agg_crs else None)
+    logger.info(
+        "agg CRS for tag=%s crs=%s", tag, str(agg_crs) if agg_crs else None
+    )
 
     logger.info("dissolving agg features for tag=%s by=%s", tag, agg_field)
     agg_groups = agg_gdf.dissolve(by=agg_field)
@@ -1566,7 +1630,9 @@ def run_vector_stats_job(
     tree = STRtree(group_geometries)
     logger.info("STRtree built for tag=%s", tag)
 
-    logger.info("building geometry-id index map for tag=%s groups=%d", tag, group_count)
+    logger.info(
+        "building geometry-id index map for tag=%s groups=%d", tag, group_count
+    )
     geom_id_to_idx = {
         id(geometry): index for index, geometry in enumerate(group_geometries)
     }
@@ -1598,7 +1664,9 @@ def run_vector_stats_job(
 
         transformer = None
         if agg_crs and base_crs and agg_crs != base_crs:
-            transformer = Transformer.from_crs(base_crs, agg_crs, always_xy=True)
+            transformer = Transformer.from_crs(
+                base_crs, agg_crs, always_xy=True
+            )
             base_gdf = base_gdf.to_crs(agg_crs)
 
         transformers_by_stem[stem] = transformer
@@ -1614,7 +1682,10 @@ def run_vector_stats_job(
             nearest_geometries = np.asarray(tree.nearest(geometries_chunk))
             if nearest_geometries.dtype == object:
                 nearest_geometries = np.fromiter(
-                    (geom_id_to_idx[id(geometry)] for geometry in nearest_geometries),
+                    (
+                        geom_id_to_idx[id(geometry)]
+                        for geometry in nearest_geometries
+                    ),
                     dtype=np.int64,
                     count=len(nearest_geometries),
                 )
@@ -1647,8 +1718,12 @@ def run_vector_stats_job(
             groups_sorted, return_index=True, return_counts=True
         )
         assignments_by_stem[stem] = {
-            group_keys_arr[int(group_index)]: features_sorted[start : start + count]
-            for group_index, start, count in zip(unique_groups, start_indices, counts)
+            group_keys_arr[int(group_index)]: features_sorted[
+                start : start + count
+            ]
+            for group_index, start, count in zip(
+                unique_groups, start_indices, counts
+            )
         }
 
         stem_frame = pd.DataFrame({agg_field: group_keys_arr})
@@ -1679,11 +1754,15 @@ def run_vector_stats_job(
                 or ("stdev" in core_ops)
                 or ("sum" in core_ops)
             ):
-                valid_count = np.bincount(groups_valid, minlength=group_count).astype(
-                    np.int64
-                )
+                valid_count = np.bincount(
+                    groups_valid, minlength=group_count
+                ).astype(np.int64)
 
-            if ("mean" in core_ops) or ("stdev" in core_ops) or ("sum" in core_ops):
+            if (
+                ("mean" in core_ops)
+                or ("stdev" in core_ops)
+                or ("sum" in core_ops)
+            ):
                 sum_values = np.bincount(
                     groups_valid, weights=values_valid, minlength=group_count
                 ).astype(float, copy=False)
@@ -1751,7 +1830,9 @@ def run_vector_stats_job(
                             unique_groups, start_indices, counts
                         ):
                             out[int(group_index)] = np.percentile(
-                                values_sorted[start_index : start_index + count],
+                                values_sorted[
+                                    start_index : start_index + count
+                                ],
                                 percentile_value,
                             )
                         stem_frame[column_name] = out
@@ -1768,7 +1849,9 @@ def run_vector_stats_job(
         result_table = pd.DataFrame(columns=[agg_field])
 
     desired_columns = [agg_field]
-    per_field_ops = [operation for operation in core_ops if operation != "total_count"]
+    per_field_ops = [
+        operation for operation in core_ops if operation != "total_count"
+    ]
 
     for base_vector_path in base_vector_path_list:
         stem = Path(base_vector_path).stem
@@ -1789,7 +1872,9 @@ def run_vector_stats_job(
                 if column_name in result_table.columns:
                     desired_columns.append(column_name)
 
-    remaining_columns = [c for c in result_table.columns if c not in desired_columns]
+    remaining_columns = [
+        c for c in result_table.columns if c not in desired_columns
+    ]
     result_table = result_table[desired_columns + remaining_columns]
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -1929,7 +2014,9 @@ def run_zonal_stats_job(
 
         vector_dataframe = pd.read_csv(vector_tmp_csv)
         if "base_vector" in vector_dataframe.columns:
-            vector_dataframe = vector_dataframe.rename(columns={"base_vector": "base"})
+            vector_dataframe = vector_dataframe.rename(
+                columns={"base_vector": "base"}
+            )
 
         combined_dataframe = vector_dataframe
 
@@ -1944,7 +2031,9 @@ def run_zonal_stats_job(
             for operation in core_ops:
                 row[f"{operation}_{raster_stem}"] = statistics.get(operation)
             for percentile_key in pct_keys:
-                row[f"{percentile_key}_{raster_stem}"] = statistics.get(percentile_key)
+                row[f"{percentile_key}_{raster_stem}"] = statistics.get(
+                    percentile_key
+                )
             raster_rows.append(row)
 
         raster_dataframes.append(pd.DataFrame(raster_rows))
