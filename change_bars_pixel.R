@@ -21,24 +21,26 @@ if (file.exists("Paths.R")) source("Paths.R") else source("paths.R")
 clean_service_names <- function(column_names) {
   column_names %>%
     tolower() %>%
-    # Remove common suffixes to simplify matching
+    # First, apply specific replacements for coastal services to avoid conflicts
+    str_replace_all("_rt_ratio", "_C_Risk_Red_Ratio") %>%
+    str_replace_all("_rt", "_C_Risk") %>%
+    
+    # Now, remove common suffixes to simplify matching for other variables
     str_remove_all("_diff.*|_change.*|_1992_2020.*") %>%
-    # Remove specific suffixes found in data
     str_remove_all("_esa") %>%
     
-    # Map to desired service names (Longer specific matches first)
+    # Map remaining desired service names
     str_replace_all("coastal_risk_reduction_ratio", "C_Risk_Red_Ratio") %>%
+    str_replace_all("coastal_risk", "C_Risk") %>%
     str_replace_all("n_retention_ratio", "N_Ret_Ratio") %>%
     str_replace_all("sediment_retention_ratio|sed_retention_ratio", "Sed_Ret_Ratio") %>%
-    
     str_replace_all("realized_polllination_on_ag|realized_pollination_on_ag", "Pollination") %>%
-    
-    str_replace_all("coastal_risk", "C_Risk") %>%
     str_replace_all("n_export", "N_export") %>%
     str_replace_all("sediment_export|sed_export", "Sed_export") %>%
     str_replace_all("polllination|pollination", "Pollination") %>%
     str_replace_all("nature_access", "Nature_Access") %>%
     
+    # Final cleanup
     str_replace_all("__+", "_") %>%
     str_replace_all("_$", "")
 }
@@ -75,7 +77,7 @@ tt_combined <- map_df(file_list, ~{
 # --- 2. FILTERING & CLEANING ---
 # Keep only relevant summary stats and change variables
 tt_filtered <- tt_combined %>% 
-  select(grouping, unit, starts_with(c("mean_", "stdev_", "valid_count_"))) %>%
+  select(grouping, unit, starts_with(c("mean_", "stdev_", "valid_count_")), -contains("nohab")) %>%
   filter(unit != "Antarctica") %>% filter(unit!= "Seven seas (open ocean)") # Remove Antarctica and Open Ocean
   
 

@@ -2,6 +2,15 @@
 
 This file tracks the work done on the `zonal_stats_toolkit` project.
 
+## 2026-01-29
+
+*   **Data Integration & Script Refactoring:**
+    *   Began work to integrate new vector-based data attributes into the analysis pipeline.
+    *   Updated the `change_bars_pixel.R` plotting script to handle new data inputs, particularly for coastal protection. This required significant refactoring of the variable name cleaning logic to correctly map new `Rt` and `Rt_ratio` columns to their corresponding services (`C_Risk`, `C_Risk_Red_Ratio`).
+    *   Refined the cleaning function to be more robust, preventing incorrect partial matching on other service names like `n_export`.
+    *   Removed unnecessary `_nohab` columns from the analysis to resolve duplicate column name errors that arose after the name cleaning.
+*   **Outputs:** Generated new output plots and summary CSVs reflecting the corrected analysis.
+
 ## 2026-01-28
 
 *   **Consolidated Analysis Configuration:** Updated the main configuration file (`global_ncp_change_analysis.ini`) to include vector-based coastal protection data from `c_protection_ch.gpkg`. This merges the "double check" analysis into the main workflow, allowing for a single, consolidated run that processes both the original raster datasets and the new vector-attribute-derived rasters for coastal protection metrics (`Rt_diff_1992_2020`, `Rt_nohab_all_diff_1992_2020`, `Rt_ratio_diff_1992_2020`).
