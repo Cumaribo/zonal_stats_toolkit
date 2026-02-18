@@ -26,7 +26,7 @@ clean_service_names <- function(column_names) {
     str_replace_all("_rt", "_C_Risk") %>%
     
     # Now, remove common suffixes to simplify matching for other variables
-    str_remove_all("_diff.*|_change.*|_1992_2020.*") %>%
+    str_remove_all("_diff.*|_change.*|_1992_2020.*|_pct_chg.*") %>%
     str_remove_all("_esa") %>%
     
     # Map remaining desired service names
