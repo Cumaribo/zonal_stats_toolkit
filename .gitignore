@@ -2,4 +2,7 @@
 # Ignore data directory
 data/
 workdir/
+workdir_coastal/
+workdir_raw/
+workdir_raw_fid/
 docker_config/

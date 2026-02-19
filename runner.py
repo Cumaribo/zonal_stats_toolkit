@@ -280,7 +280,7 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
 
         with fiona.open(str(agg_vector), layer=agg_layer) as src:
             props = src.schema.get("properties", {})
-            if agg_field not in props:
+            if agg_field not in props and agg_field.lower() != "fid":
                 raise ValueError(
                     f'[job:{tag}] agg_field "{agg_field}" not found in layer "{agg_layer}" of {agg_vector}. '
                     f"Available fields: {sorted(props.keys())}"
@@ -575,7 +575,10 @@ def fast_zonal_statistics(
         aggregate_layer.ResetReading()
         for feature in aggregate_layer:
             feature_id = feature.GetFID()
-            group_value = feature.GetField(aggregate_vector_field)
+            if aggregate_vector_field.lower() == "fid":
+                group_value = feature_id
+            else:
+                group_value = feature.GetField(aggregate_vector_field)
             feature_id_set.add(feature_id)
             feature_id_to_group_value[feature_id] = group_value
             unique_group_values.add(group_value)
@@ -1030,6 +1033,25 @@ def run_vector_stats_job(
     agg_gdf = gpd.read_file(agg_vector, layer=agg_layer)
     logger.info("agg vector read for tag=%s features=%d", tag, len(agg_gdf))
 
+    if agg_field not in agg_gdf.columns:
+        if agg_field.lower() == "fid":
+            agg_gdf[agg_field] = agg_gdf.index
+        else:
+            logger.error(
+                "Tag=%s: agg_field '%s' missing from columns. Available: %s",
+                tag,
+                agg_field,
+                list(agg_gdf.columns),
+            )
+            return
+
+    null_count = agg_gdf[agg_field].isnull().sum()
+    if null_count > 0:
+        logger.warning(
+            "Tag=%s: agg_field '%s' has %d null values (%.1f%%). These will be dropped.",
+            tag, agg_field, null_count, 100.0 * null_count / len(agg_gdf)
+        )
+
     agg_crs = CRS.from_user_input(agg_gdf.crs) if agg_gdf.crs else None
     logger.info(
         "agg CRS for tag=%s crs=%s", tag, str(agg_crs) if agg_crs else None
@@ -1044,17 +1066,27 @@ def run_vector_stats_job(
     group_keys_arr = np.asarray(group_keys, dtype=object)
     group_count = len(group_keys_arr)
 
+    if group_count == 0:
+        logger.warning("No aggregation groups found for tag=%s. Writing empty CSV.", tag)
+        output_csv.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(columns=[agg_field]).to_csv(output_csv, index=False)
+        return
+
     logger.info("building STRtree for tag=%s groups=%d", tag, group_count)
     tree = STRtree(group_geometries)
     logger.info("STRtree built for tag=%s", tag)
 
-    logger.info(
-        "building geometry-id index map for tag=%s groups=%d", tag, group_count
-    )
-    geom_id_to_idx = {
-        id(geometry): index for index, geometry in enumerate(group_geometries)
-    }
-    logger.info("geometry-id index map built for tag=%s", tag)
+    use_query_nearest = hasattr(tree, "query_nearest")
+    geom_id_to_idx = None
+
+    if not use_query_nearest:
+        logger.info(
+            "building geometry-id index map for tag=%s groups=%d", tag, group_count
+        )
+        geom_id_to_idx = {
+            id(geometry): index for index, geometry in enumerate(group_geometries)
+        }
+        logger.info("geometry-id index map built for tag=%s", tag)
 
     transformers_by_stem = {}
     assignments_by_stem = {}
@@ -1097,17 +1129,28 @@ def run_vector_stats_job(
 
         def _nearest_chunk_thread(args):
             start_index, geometries_chunk = args
-            nearest_geometries = np.asarray(tree.nearest(geometries_chunk))
-            if nearest_geometries.dtype == object:
-                nearest_geometries = np.fromiter(
-                    (
-                        geom_id_to_idx[id(geometry)]
-                        for geometry in nearest_geometries
-                    ),
-                    dtype=np.int64,
-                    count=len(nearest_geometries),
-                )
-            return start_index, nearest_geometries.astype(np.int64, copy=False)
+            if use_query_nearest:
+                # Shapely 2.0+
+                query_indices = tree.query_nearest(geometries_chunk)
+                # query_indices is (2, N), row 0 is input index, row 1 is tree index
+                nearest_indices = np.zeros(len(geometries_chunk), dtype=np.int64)
+                nearest_indices[query_indices[0]] = query_indices[1]
+                return start_index, nearest_indices
+            else:
+                # Shapely < 2.0
+                nearest_geometries = np.asarray(tree.nearest(geometries_chunk))
+                if nearest_geometries.ndim == 0:
+                    nearest_geometries = nearest_geometries.reshape(1)
+                if nearest_geometries.dtype == object:
+                    nearest_geometries = np.fromiter(
+                        (
+                            geom_id_to_idx[id(geometry)]
+                            for geometry in nearest_geometries
+                        ),
+                        dtype=np.int64,
+                        count=len(nearest_geometries),
+                    )
+                return start_index, nearest_geometries.astype(np.int64, copy=False)
 
         nearest_tasks = [
             (

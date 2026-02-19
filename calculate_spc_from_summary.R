@@ -19,14 +19,18 @@ jobs <- c("country", "region_wb", "income_grp", "biome", "grid_10km")
 # =============================================================================
 
 process_job <- function(job_name) {
-  csv_path <- file.path(raw_output_dir, paste0(job_name, ".csv"))
+  # Find the latest timestamped file for this job (e.g., country_20260218_....csv)
+  pattern <- paste0("^", job_name, "(_\\d{8}_\\d{6})?\\.csv$")
+  files <- list.files(raw_output_dir, pattern = pattern, full.names = TRUE)
   
-  if (!file.exists(csv_path)) {
-    message(paste("Skipping missing file:", csv_path))
+  if (length(files) == 0) {
+    message(paste("Skipping missing file for job:", job_name))
     return(NULL)
   }
   
-  message(paste("Processing:", job_name, "from", csv_path))
+  # Pick the latest file (sorting descending puts latest timestamp first)
+  csv_path <- sort(files, decreasing = TRUE)[1]
+  message(paste("Processing:", job_name, "from", basename(csv_path)))
   
   # Read CSV
   df <- read_csv(csv_path, show_col_types = FALSE)
@@ -43,10 +47,11 @@ process_job <- function(job_name) {
       names_to = "col_name",
       values_to = "value"
     ) %>%
-    # Extract Year (1992 or 2020) at the end of the string
+    # Extract Year (1992 or 2020) from anywhere in the string
     mutate(
-      year = str_extract(col_name, "(1992|2020)$"),
-      rest = str_remove(col_name, "_(1992|2020)$")
+      year = str_extract(col_name, "(1992|2020)"),
+      # Remove the year to help match the service name later
+      rest = str_remove(col_name, "_?(1992|2020)")
     ) %>%
     filter(!is.na(year)) # Drop columns that don't match the year pattern
   
@@ -58,13 +63,19 @@ process_job <- function(job_name) {
   df_parsed <- df_long %>%
     mutate(
       operation = str_extract(rest, ops_pattern) %>% str_remove("_$"),
-      service = str_remove(rest, ops_pattern)
+      # Clean up the service name:
+      # 1. Remove operation prefix
+      # 2. Remove md5 hashes (e.g., _md5_728edc) and other artifacts to ensure 1992/2020 match
+      service_raw = str_remove(rest, ops_pattern),
+      service_clean = str_remove(service_raw, "_md5_[a-f0-9]+") %>% 
+                      str_remove("_compressed")
     ) %>%
-    select(-rest, -col_name)
+    select(-rest, -col_name, -service_raw)
   
   # 3. Pivot Wider to get 1992 and 2020 side-by-side
   df_paired <- df_parsed %>%
     pivot_wider(
+      id_cols = c(all_of(id_col), service_clean, operation),
       names_from = year,
       values_from = value,
       names_prefix = "y"
@@ -82,7 +93,7 @@ process_job <- function(job_name) {
       )
     ) %>%
     # Reorder columns for readability
-    select(all_of(id_col), service, operation, y1992, y2020, abs_change, spc)
+    select(all_of(id_col), service = service_clean, operation, y1992, y2020, abs_change, spc)
   
   # 5. Save Result
   out_path <- file.path(final_output_dir, paste0(job_name, "_change.csv"))
