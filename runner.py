@@ -254,6 +254,8 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
         operations = [
             o.strip().lower() for o in ops_raw.split(",") if o.strip()
         ]
+        # Allow 'avg' as an alias for 'mean'
+        operations = ["mean" if op == "avg" else op for op in operations]
         if not operations:
             raise ValueError(f"[job:{tag}] operations is empty")
 

@@ -3,7 +3,10 @@
 # Project: Global NCP Analysis
 # ==============================================================================
 
-library(tidyverse)
+library(dplyr)
+library(readr)
+library(stringr)
+library(sf)
 
 # Automatically set working directory to the script's location in RStudio
 if (interactive() && requireNamespace("rstudioapi", quietly = TRUE)) {
@@ -16,192 +19,84 @@ if (interactive() && requireNamespace("rstudioapi", quietly = TRUE)) {
 
 if (file.exists("Paths.R")) source("Paths.R") else source("paths.R")
 
-# --- 0. CONFIGURATION & HELPERS ---
-# Define a single source of truth for name cleaning to use throughout the script
-clean_service_names <- function(column_names) {
-  column_names %>%
-    tolower() %>%
-    # First, apply specific replacements for coastal services to avoid conflicts
-    str_replace_all("_rt_ratio", "_C_Risk_Red_Ratio") %>%
-    str_replace_all("_rt", "_C_Risk") %>%
-    
-    # Now, remove common suffixes to simplify matching for other variables
-    str_remove_all("_diff.*|_change.*|_1992_2020.*|_pct_chg.*") %>%
-    str_remove_all("_esa") %>%
-    
-    # Map remaining desired service names
-    str_replace_all("coastal_risk_reduction_ratio", "C_Risk_Red_Ratio") %>%
-    str_replace_all("coastal_risk", "C_Risk") %>%
-    str_replace_all("n_retention_ratio", "N_Ret_Ratio") %>%
-    str_replace_all("sediment_retention_ratio|sed_retention_ratio", "Sed_Ret_Ratio") %>%
-    str_replace_all("realized_polllination_on_ag|realized_pollination_on_ag", "Pollination") %>%
-    str_replace_all("n_export", "N_export") %>%
-    str_replace_all("sediment_export|sed_export", "Sed_export") %>%
-    str_replace_all("polllination|pollination", "Pollination") %>%
-    str_replace_all("nature_access", "Nature_Access") %>%
-    
-    # Final cleanup
-    str_replace_all("__+", "_") %>%
-    str_replace_all("_$", "")
+# --- 1. DATA PREPARATION ---
+# Read the raw output from the runner.py script. This file contains the zonal
+# statistics for all services for both 1992 and 2020.
+input_file <- project_dir("output_raw_fid", "grid_10km_20260219_224417.csv")
+output_csv <- project_dir("output_raw_fid", "grid_10km_fid_filtered.csv")
+
+# Define the path to the input grid GPKG
+grid_gpkg_path <- project_dir("data", "vector_basedata", "AOOGrid_10x10km_land_4326_clean.gpkg")
+output_gpkg <- project_dir("output_raw_fid", "grid_10km_with_stats.gpkg")
+
+message("Reading raw data from: ", input_file)
+raw_data <- read_csv(input_file, show_col_types = FALSE)
+
+# Following the pattern from the original script, we select only the 'mean', 
+# 'stdev', and 'valid_count' columns, which are needed for analysis. We also
+# keep the 'fid' identifier. We also filter out fid = 0 as it is likely invalid.
+message("Filtering columns and removing invalid fid=0...")
+filtered_data <- raw_data %>%
+  select(fid, starts_with(c("mean_", "stdev_", "valid_count_"))) %>%
+  filter(fid != 0)
+
+message("Writing filtered CSV to: ", output_csv)
+write_csv(filtered_data, output_csv)
+
+message("Reading input grid from: ", grid_gpkg_path)
+grid_poly <- st_read(grid_gpkg_path, quiet = TRUE)
+
+# Ensure we have an 'fid' column to join on. 
+# If the GPKG doesn't have an explicit 'fid' column, we assume row numbers correspond to FIDs (1-based).
+if (!"fid" %in% names(grid_poly)) {
+  message("No 'fid' column found in GPKG. Creating 'fid' from row numbers (assuming 1-based index)...")
+  grid_poly$fid <- 1:nrow(grid_poly)
 }
 
-# --- 1. DATA INGESTION & STACKING ---
-data_dir_zonal <- project_dir("output")
+message("Joining stats to grid geometry...")
+grid_joined <- grid_poly %>%
+  inner_join(filtered_data, by = "fid")
 
-message("Using project output directory: ", data_dir_zonal)
-
-if (!dir.exists(data_dir_zonal)) stop("Data directory not found: ", data_dir_zonal)
-
-file_list <- list.files(path = data_dir_zonal, pattern = "\\.csv$", full.names = TRUE) %>% 
-  .[!str_detect(., "data[._](combined|filtered|final|change|ES)")]
-
-tt_combined <- map_df(file_list, ~{
-  df <- read_csv(.x, show_col_types = FALSE)
-  # Extract filename from full path and remove timestamp/extension
-  grp_name <- basename(.x) %>% str_remove("_[0-9]{8}_[0-9]{6}\\.csv$") %>% str_remove("\\.csv$")
-  
-  # Robust renaming of the first column to 'unit'
-  colnames(df)[colnames(df) == "unit"] <- "unit_original"
-  colnames(df)[1] <- "unit"
-  
-  # Rename avg to mean to match script expectations
-  colnames(df) <- gsub("^avg_", "mean_", colnames(df))
-  
-  df %>%
-    mutate(grouping = grp_name, unit = as.character(unit)) %>%
-    select(grouping, unit, everything())
-})
-
-# write_csv(tt_combined, "data.combined.csv")
-
-# --- 2. FILTERING & CLEANING ---
-# Keep only relevant summary stats and change variables
-tt_filtered <- tt_combined %>% 
-  select(grouping, unit, starts_with(c("mean_", "stdev_", "valid_count_")), -contains("nohab")) %>%
-  filter(unit != "Antarctica") %>% filter(unit!= "Seven seas (open ocean)") # Remove Antarctica and Open Ocean
-  
-
-# TODO: Future QAQC - Check if valid pixel counts are consistent between years.
-# We previously implemented a check for >5% difference in valid_count between 1992 and 2020.
-# This flagged some units (e.g. coastal areas) where the mask changed significantly.
-# We decided to disable this for now as the ratio variables might behave differently, 
-# but it is a relevant test for future iterations to ensure "apples to apples" comparison.
-
-# Select only the "change" or "diff" columns
-tt_ch <- tt_filtered %>% 
-  select(grouping, unit, contains("change"), contains("diff"))
-
-# Apply the unified cleaning function # Lecacy also, the name cleaning has been sorted of. 
-names(tt_ch) <- clean_service_names(names(tt_ch))
-
-write_csv(tt_ch, "change_variables_cleaned.csv")
-
-# --- 3. ANALYSIS (Standard Error Calculation) ---
-# Reshape to long format to calculate SE across all services
-tt_analysis <- tt_ch %>%
-  select(-matches("X1|unnamed|source_file")) %>%
-  pivot_longer(
-    cols = -c(grouping, unit),
-    names_to = c(".value", "service"),
-    names_pattern = "(mean|stdev|valid_count)_(.*)"
+message("Cleaning column names for clarity...")
+grid_cleaned <- grid_joined %>%
+  rename_with(
+    .cols = starts_with(c("mean_", "stdev_", "valid_count_")),
+    .fn = ~ .x %>%
+      # This regex is the key. It captures the stat, the service stem, and the year,
+      # and discards all the junk that comes after the year.
+      str_replace(
+        pattern = "^(mean|stdev|valid_count)_(.*?)(1992|2020).*",
+        replacement = "\\1_\\2\\3"
+      ) %>%
+      # Now, clean up the captured service part into canonical names.
+      str_replace("Rt_ratio_", "C_Risk_Red_Ratio_") %>%
+      str_replace("Rt_", "C_Risk_") %>%
+      str_replace("global_n_export_tnc_esa", "N_export_") %>%
+      str_replace("global_n_retention_ESAmar_", "N_retention_") %>%
+      str_replace("global_sed_export_marine_mod_ESA_", "Sed_export_") %>%
+      str_replace("global_usle_marine_mod_ESA_", "USLE_") %>%
+      str_replace("nature_access_lspop2019_ESA", "Nature_Access_") %>%
+      str_replace("realized_pollination_on_ag_ESAmar_", "Pollination_")
   ) %>%
-  mutate(se = stdev / sqrt(valid_count)) %>%
-  filter(!is.na(mean), mean != 0) %>% 
-  filter(!str_detect(service, "usle|n_retention")) # Focus on meaningful changes
+  select(-fid) # Drop the temporary fid column before writing
 
-# Save wide version for Becky/Rich (Mean and SE columns)
-tt_final_wide <- tt_analysis %>%
-  select(grouping, unit, service, mean, se) %>%
-  pivot_wider(
-    names_from = service, 
-    values_from = c(mean, se),
-    names_glue = "{.value}_{service}"
-  )
+message("Joined and cleaned ", nrow(grid_cleaned), " features. Writing joined GPKG to: ", output_gpkg)
 
-write_csv(tt_final_wide, paste(data_dir_zonal, "final_ES_change_analysis.csv", sep="/"))
+# Explicitly delete the file if it exists to ensure a clean overwrite
+if (file.exists(output_gpkg)) unlink(output_gpkg)
 
+st_write(grid_cleaned, output_gpkg, delete_dsn = TRUE, quiet = TRUE)
 
-# --- 4. VISUALIZATION ---
+message("Step 1 (Data Preparation & Join) complete.")
 
-# TODO: Add flexibility to filter which 'grouping' or 'service' is plotted (e.g. via function arguments or a config list).
-# TODO: Define a canonical order for 'service' factor levels so they appear consistently across plots (not just alphabetical).
-# TODO: Implement per-facet ordering for 'unit' so that bars are sorted descending by mean within each service panel (currently reorder() sorts globally).
+# --- ANALYSIS & VISUALIZATION (DISABLED) ---
+# The following sections for change calculation, analysis, and plotting are
+# intentionally disabled for this data preparation step. They are preserved
+# here as a reference for future adaptation.
+if (FALSE) {
 
-# Define the specific order for the facets
-svc_order <- c(
-  "C_Risk", "N_export", "Sed_export",
-  "C_Risk_Red_Ratio", "N_Ret_Ratio", "Sed_Ret_Ratio",
-  "Pollination", "Nature_Access"
-)
+  # ... The original analysis and plotting code was here ...
 
-# We use a more specific name 'target_group' to avoid any confusion with column names
-generate_es_plot <- function(target_group) {
-  
-  # Use .env$ to explicitly pull 'target_group' from the function argument
-  data_subset <- tt_analysis %>% 
-    filter(grouping == .env$target_group)
-  
-  # Filter top 5 and bottom 5 countries per service if grouping contains "country"
-  if (str_detect(target_group, "country")) {
-    message("Filtering top/bottom 5 units for: ", target_group)
-    data_subset <- data_subset %>%
-      group_by(service) %>%
-      arrange(service, desc(mean)) %>%
-      filter(row_number() <= 5 | row_number() > (n() - 5)) %>%
-      ungroup()
-  }
-
-  # Skip if no data for this group
-  if(nrow(data_subset) == 0) {
-    message(paste("No data found for", target_group))
-    return(NULL)
-  }
-  
-  # Calculate height based on number of units (0.22 inches per unit)
-  # This ensures long lists like Countries are readable
-  num_units <- length(unique(data_subset$unit))
-  calc_height <- max(6, num_units * 0.22)
-  
-  message(paste("Generating plot for:", target_group, "(Units:", num_units, ")"))
-  
-  # Ensure service is a factor with the correct order
-  data_subset <- data_subset %>%
-    mutate(service = factor(service, levels = svc_order))
-  
-  # Use free scales for countries (different units per facet), free_x for others (shared Y axis)
-  facet_scales <- if (str_detect(target_group, "country")) "free" else "free_x"
-  
-  p <- ggplot(data_subset, aes(x = mean, y = unit, fill = service)) +
-    geom_col(alpha = 0.7, show.legend = FALSE) +
-    geom_errorbar(aes(xmin = mean - se, xmax = mean + se), width = 0.3, color = "grey30", na.rm = TRUE) +
-    geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
-    facet_wrap(~service, scales = facet_scales, ncol = 3, drop = FALSE) +
-    scale_y_discrete(limits = rev) +
-    theme_minimal() +
-    labs(
-      title = paste("Ecosystem Service Change:", target_group),
-      subtitle = "Bars = Mean Change | Error Bars = +/- 1 SE (1992-2020)",
-      x = "Mean Change Value", 
-      y = NULL
-    ) +
-    theme(
-      strip.text = element_text(face = "bold", size = 11),
-      axis.text.y = element_text(size = 7)
-    )
-  
-  # Save with limitsize = FALSE to handle the long country plots
-  ggsave(
-    filename = paste0("ES_plot_", target_group, ".png"), 
-    plot = p, 
-    width = 14, 
-    height = calc_height, 
-    limitsize = FALSE
-  )
 }
 
-# 5. EXECUTION
-# Get the list of groupings and run the function for each
-unique_groupings <- unique(tt_analysis$grouping)
-
-# walk() is like a loop that doesn't print messy output
-walk(unique_groupings, generate_es_plot)
+message("Script finished. Plotting sections were skipped as requested.")
