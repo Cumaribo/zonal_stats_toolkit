@@ -537,24 +537,42 @@ def fast_zonal_statistics(
         return np.isclose(value_array, raster_nodata) | ~finite_mask
 
     try:
-        vector_translate_kwargs = {
-            "simplifyTolerance": simplify_tolerance,
-            "format": "GPKG",
-        }
+        vector_translate_kwargs = {"format": "GPKG"}
+        src_path = str(aggregate_vector_path)
+        tmp_reprojected_path = None
         if needs_reproject:
-            vector_translate_kwargs["dstSRS"] = raster_info["projection_wkt"]
+            tmp_reprojected_path = Path(projected_vector_path).with_suffix(
+                ".reprojected.gpkg"
+            )
+
+            logger.info(
+                "vector translate (reproject) start | output=%s | reproject=%s",
+                tmp_reprojected_path,
+                needs_reproject,
+            )
+            gdal.VectorTranslate(
+                str(tmp_reprojected_path),
+                src_path,
+                dstSRS=raster_info["projection_wkt"],
+                **vector_translate_kwargs,
+            )
+            src_path = str(tmp_reprojected_path)
 
         logger.info(
-            "vector translate start | output=%s | simplifyTolerance=%s | reproject=%s",
+            "vector translate (simplify) start | output=%s | simplifyTolerance=%s | reproject=%s",
             projected_vector_path,
             simplify_tolerance,
             needs_reproject,
         )
         gdal.VectorTranslate(
-            projected_vector_path,
-            str(aggregate_vector_path),
+            str(projected_vector_path),
+            src_path,
+            simplifyTolerance=simplify_tolerance,
             **vector_translate_kwargs,
         )
+        if tmp_reprojected_path:
+            tmp_reprojected_path.unlink()
+
         logger.info("vector translate done | output=%s", projected_vector_path)
 
         source_layer = None
@@ -577,10 +595,7 @@ def fast_zonal_statistics(
         aggregate_layer.ResetReading()
         for feature in aggregate_layer:
             feature_id = feature.GetFID()
-            if aggregate_vector_field.lower() == "fid":
-                group_value = feature_id
-            else:
-                group_value = feature.GetField(aggregate_vector_field)
+            group_value = feature.GetField(aggregate_vector_field)
             feature_id_set.add(feature_id)
             feature_id_to_group_value[feature_id] = group_value
             unique_group_values.add(group_value)
@@ -1035,25 +1050,6 @@ def run_vector_stats_job(
     agg_gdf = gpd.read_file(agg_vector, layer=agg_layer)
     logger.info("agg vector read for tag=%s features=%d", tag, len(agg_gdf))
 
-    if agg_field not in agg_gdf.columns:
-        if agg_field.lower() == "fid":
-            agg_gdf[agg_field] = agg_gdf.index
-        else:
-            logger.error(
-                "Tag=%s: agg_field '%s' missing from columns. Available: %s",
-                tag,
-                agg_field,
-                list(agg_gdf.columns),
-            )
-            return
-
-    null_count = agg_gdf[agg_field].isnull().sum()
-    if null_count > 0:
-        logger.warning(
-            "Tag=%s: agg_field '%s' has %d null values (%.1f%%). These will be dropped.",
-            tag, agg_field, null_count, 100.0 * null_count / len(agg_gdf)
-        )
-
     agg_crs = CRS.from_user_input(agg_gdf.crs) if agg_gdf.crs else None
     logger.info(
         "agg CRS for tag=%s crs=%s", tag, str(agg_crs) if agg_crs else None
@@ -1068,27 +1064,17 @@ def run_vector_stats_job(
     group_keys_arr = np.asarray(group_keys, dtype=object)
     group_count = len(group_keys_arr)
 
-    if group_count == 0:
-        logger.warning("No aggregation groups found for tag=%s. Writing empty CSV.", tag)
-        output_csv.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(columns=[agg_field]).to_csv(output_csv, index=False)
-        return
-
     logger.info("building STRtree for tag=%s groups=%d", tag, group_count)
     tree = STRtree(group_geometries)
     logger.info("STRtree built for tag=%s", tag)
 
-    use_query_nearest = hasattr(tree, "query_nearest")
-    geom_id_to_idx = None
-
-    if not use_query_nearest:
-        logger.info(
-            "building geometry-id index map for tag=%s groups=%d", tag, group_count
-        )
-        geom_id_to_idx = {
-            id(geometry): index for index, geometry in enumerate(group_geometries)
-        }
-        logger.info("geometry-id index map built for tag=%s", tag)
+    logger.info(
+        "building geometry-id index map for tag=%s groups=%d", tag, group_count
+    )
+    geom_id_to_idx = {
+        id(geometry): index for index, geometry in enumerate(group_geometries)
+    }
+    logger.info("geometry-id index map built for tag=%s", tag)
 
     transformers_by_stem = {}
     assignments_by_stem = {}
@@ -1131,28 +1117,17 @@ def run_vector_stats_job(
 
         def _nearest_chunk_thread(args):
             start_index, geometries_chunk = args
-            if use_query_nearest:
-                # Shapely 2.0+
-                query_indices = tree.query_nearest(geometries_chunk)
-                # query_indices is (2, N), row 0 is input index, row 1 is tree index
-                nearest_indices = np.zeros(len(geometries_chunk), dtype=np.int64)
-                nearest_indices[query_indices[0]] = query_indices[1]
-                return start_index, nearest_indices
-            else:
-                # Shapely < 2.0
-                nearest_geometries = np.asarray(tree.nearest(geometries_chunk))
-                if nearest_geometries.ndim == 0:
-                    nearest_geometries = nearest_geometries.reshape(1)
-                if nearest_geometries.dtype == object:
-                    nearest_geometries = np.fromiter(
-                        (
-                            geom_id_to_idx[id(geometry)]
-                            for geometry in nearest_geometries
-                        ),
-                        dtype=np.int64,
-                        count=len(nearest_geometries),
-                    )
-                return start_index, nearest_geometries.astype(np.int64, copy=False)
+            nearest_geometries = np.asarray(tree.nearest(geometries_chunk))
+            if nearest_geometries.dtype == object:
+                nearest_geometries = np.fromiter(
+                    (
+                        geom_id_to_idx[id(geometry)]
+                        for geometry in nearest_geometries
+                    ),
+                    dtype=np.int64,
+                    count=len(nearest_geometries),
+                )
+            return start_index, nearest_geometries.astype(np.int64, copy=False)
 
         nearest_tasks = [
             (
