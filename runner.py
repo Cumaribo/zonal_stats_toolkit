@@ -535,24 +535,42 @@ def fast_zonal_statistics(
         return np.isclose(value_array, raster_nodata) | ~finite_mask
 
     try:
-        vector_translate_kwargs = {
-            "simplifyTolerance": simplify_tolerance,
-            "format": "GPKG",
-        }
+        vector_translate_kwargs = {"format": "GPKG"}
+        src_path = str(aggregate_vector_path)
+        tmp_reprojected_path = None
         if needs_reproject:
-            vector_translate_kwargs["dstSRS"] = raster_info["projection_wkt"]
+            tmp_reprojected_path = Path(projected_vector_path).with_suffix(
+                ".reprojected.gpkg"
+            )
+
+            logger.info(
+                "vector translate (reproject) start | output=%s | reproject=%s",
+                tmp_reprojected_path,
+                needs_reproject,
+            )
+            gdal.VectorTranslate(
+                str(tmp_reprojected_path),
+                src_path,
+                dstSRS=raster_info["projection_wkt"],
+                **vector_translate_kwargs,
+            )
+            src_path = str(tmp_reprojected_path)
 
         logger.info(
-            "vector translate start | output=%s | simplifyTolerance=%s | reproject=%s",
+            "vector translate (simplify) start | output=%s | simplifyTolerance=%s | reproject=%s",
             projected_vector_path,
             simplify_tolerance,
             needs_reproject,
         )
         gdal.VectorTranslate(
-            projected_vector_path,
-            str(aggregate_vector_path),
+            str(projected_vector_path),
+            src_path,
+            simplifyTolerance=simplify_tolerance,
             **vector_translate_kwargs,
         )
+        if tmp_reprojected_path:
+            tmp_reprojected_path.unlink()
+
         logger.info("vector translate done | output=%s", projected_vector_path)
 
         source_layer = None
