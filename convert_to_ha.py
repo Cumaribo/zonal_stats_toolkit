@@ -1,8 +1,10 @@
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import numpy as np
-import rioxarray
-import xarray as xr
+import rasterio
+from rasterio.vrt import WarpedVRT
+from rasterio.enums import Resampling
+import traceback
 
 # --- CONFIGURATION ---
 SCRIPT_DIR = Path(__file__).parent
@@ -17,85 +19,87 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 def process_single_raster(service_path):
     print(f"Processing: {service_path.name}...")
     try:
-        # Load Area Template (Lazily) inside worker
-        area_da = rioxarray.open_rasterio(AREA_RASTER_PATH, chunks={'x': 4096, 'y': 4096})
-        
-        # Load Service Raster
-        service_da = rioxarray.open_rasterio(service_path, chunks={'x': 4096, 'y': 4096})
+        with rasterio.open(service_path) as src_service:
+            # Create a profile for the output raster
+            profile = src_service.profile.copy()
+            profile.update({
+                'dtype': 'float32',
+                'compress': 'LZW',
+                'tiled': True,
+                'bigtiff': 'YES'
+            })
             
-        # Clean up duplicate coordinates if they exist, which can corrupt a file
-        if len(np.unique(service_da.x.values)) < len(service_da.x.values):
-            print("  -> Found and removing duplicate x coordinates...")
-            _, index = np.unique(service_da['x'], return_index=True)
-            service_da = service_da.isel(x=index)
-        if len(np.unique(service_da.y.values)) < len(service_da.y.values):
-            print("  -> Found and removing duplicate y coordinates...")
-            _, index = np.unique(service_da['y'], return_index=True)
-            service_da = service_da.isel(y=index)
+            # Handle Nodata value
+            src_nodata = src_service.nodata
+            print(f"  -> Detected NoData value: {src_nodata}")
+            if src_nodata is None:
+                # If input has no nodata defined, use NaN for float output
+                out_nodata = np.nan
+            else:
+                out_nodata = src_nodata
+            
+            profile['nodata'] = out_nodata
 
-        # 3. ALIGNMENT (The "Crop and Snap")
-        print("  -> Checking alignment...")
-        
-        # Check CRS and Resolution for fast path
-        crs_match = (area_da.rio.crs == service_da.rio.crs)
-        res_match = False
-        if crs_match:
-            try:
-                res_match = np.allclose(area_da.rio.resolution(), service_da.rio.resolution(), rtol=1e-3)
-            except Exception:
-                res_match = False
+            output_path = OUTPUT_DIR / service_path.name
+            
+            # Remove existing file to avoid permission/overwrite issues
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                except Exception as e:
+                    print(f"  [WARNING] Could not remove existing file: {e}")
 
-        if crs_match and res_match:
-            print("  -> CRS and resolution match. Using fast alignment (reindex_like)...")
-            # reindex_like is much faster than reproject_match as it avoids warping
-            # tolerance=1e-5 handles slight floating point coordinate differences
-            aligned_area = area_da.reindex_like(service_da, method="nearest", tolerance=1e-5)
-        else:
-            print("  -> Grid mismatch. Using robust alignment (reproject_match)...")
-            try:
-                clipped_area = area_da.rio.clip_box(*service_da.rio.bounds())
-            except Exception:
-                clipped_area = area_da
-            aligned_area = clipped_area.rio.reproject_match(service_da)
-        
-        # 4. CALCULATION (Mass / Hectares)
-        # We use .where to avoid division by zero (if area is 0, result is NaN)
-        aligned_area = aligned_area.where(aligned_area > 0)
-        
-        # Perform calculation and inject into a copy of the original service_da
-        # to preserve exact coordinates, CRS, and Transform.
-        calculated = service_da / aligned_area
-        result_da = service_da.copy(data=calculated.data)
-        
-        # Ensure CRS and Transform are explicitly set on the output
-        result_da.rio.write_crs(service_da.rio.crs, inplace=True)
-        result_da.rio.write_transform(service_da.rio.transform(), inplace=True)
-        
-        # Update Metadata (Important for GIS)
-        result_da.name = f"{service_path.stem}_ha"
-        result_da.attrs['units'] = 'hectares'
-        
-        # 5. EXPORT
-        output_path = OUTPUT_DIR / service_path.name
-        # If the output file already exists, try to remove it first.
-        # This handles cases where a previous run (e.g., as root) created
-        # a protected file that the current user cannot overwrite.
-        if output_path.exists():
-            print(f"  -> Attempting to remove existing output file: {output_path}")
-            try:
-                output_path.unlink()
-            except Exception as e:
-                print(f"  [WARNING] Could not remove existing file: {e}. Writing may fail due to permissions.")
-        result_da.rio.to_raster(
-            output_path,
-            tiled=True,
-            compress='LZW',
-            windowed=True # Low memory write
-        )
+            with rasterio.open(output_path, 'w', **profile) as dst:
+                # Set metadata
+                dst.set_band_unit(1, 'hectares')
+                dst.set_band_description(1, f"{service_path.stem}_ha")
+
+                # Open Area raster with WarpedVRT to align it to the service raster on-the-fly
+                with rasterio.open(AREA_RASTER_PATH) as src_area:
+                    with WarpedVRT(src_area,
+                                   crs=src_service.crs,
+                                   transform=src_service.transform,
+                                   width=src_service.width,
+                                   height=src_service.height,
+                                   resampling=Resampling.nearest,
+                                   nodata=0) as vrt_area:
+                        
+                        # Process in blocks (windows) to save memory
+                        for ji, window in src_service.block_windows(1):
+                            service_data = src_service.read(1, window=window)
+                            area_data = vrt_area.read(1, window=window)
+                            
+                            # Create valid masks
+                            if np.isnan(out_nodata):
+                                valid_service = ~np.isnan(service_data)
+                            elif np.issubdtype(service_data.dtype, np.floating):
+                                valid_service = ~np.isclose(service_data, out_nodata)
+                            else:
+                                valid_service = (service_data != out_nodata)
+                            
+                            # Area must be valid and > 0
+                            valid_area = (area_data > 0) & (~np.isnan(area_data))
+                            
+                            # Combined mask where calculation is possible
+                            valid_pixels = valid_service & valid_area
+                            
+                            # Initialize result block with nodata
+                            result_block = np.full_like(service_data, out_nodata, dtype=np.float32)
+                            
+                            # Perform division only on valid pixels
+                            safe_area = area_data.copy()
+                            safe_area[~valid_area] = 1.0 # arbitrary non-zero value
+                            
+                            calculated_values = service_data / safe_area
+                            result_block[valid_pixels] = calculated_values[valid_pixels]
+                            
+                            dst.write(result_block, 1, window=window)
+
         print(f"  -> Saved to: {output_path}")
 
     except Exception as e:
         print(f"  [ERROR] Failed on {service_path.name}: {e}")
+        traceback.print_exc()
 
 def process_rasters():
     # 1. Iterate through all Service TIFs
@@ -110,7 +114,10 @@ def process_rasters():
         tasks.append(service_path)
 
     # 2. Process in parallel
-    with ProcessPoolExecutor() as executor:
+    # Limit max_workers to prevent memory exhaustion (e.g., 4 workers)
+    max_workers = 1
+    print(f"Starting processing with {max_workers} workers...")
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         list(executor.map(process_single_raster, tasks))
 
 if __name__ == "__main__":

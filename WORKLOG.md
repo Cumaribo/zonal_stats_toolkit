@@ -2,6 +2,16 @@
 
 This file tracks the work done on the `zonal_stats_toolkit` project.
 
+## 2026-03-09
+
+*   **Raster Conversion Overhaul:** Refactored `convert_to_ha.py` to resolve critical performance and stability issues when processing large global rasters.
+    *   Replaced the `rioxarray`/`dask`-based implementation with a memory-efficient `rasterio` and `WarpedVRT` approach. This processes rasters in small blocks (windows), preventing memory exhaustion and "Write failed" errors.
+    *   Fixed a critical bug where `NoData` values were being included in calculations, leading to incorrect negative values in the output per-hectare rasters.
+    *   Identified that parallel processing was overwhelming system I/O, causing write failures even with sufficient disk space. The process was updated to run sequentially (`max_workers=1`) for stability.
+    *   Enforced `BIGTIFF=YES` creation to accommodate output files exceeding the 4GB limit of standard TIFFs.
+    *   The new implementation is significantly faster and produces correct, verifiable outputs.
+*   **Zonal Statistics `fid` Fix:** Modified `runner.py` to correctly handle `agg_field = fid` by using `GetFID()` instead of `GetField()`, preventing crashes. Also ensured stable row ordering in the output CSV by sorting features by ID before aggregation.
+
 ## 2026-01-29
 
 *   **Data Integration & Script Refactoring:**
