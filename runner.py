@@ -537,7 +537,7 @@ def fast_zonal_statistics(
         return np.isclose(value_array, raster_nodata) | ~finite_mask
 
     try:
-        vector_translate_kwargs = {"format": "GPKG"}
+        vector_translate_kwargs = {"format": "GPKG", "preserveFID": True}
         src_path = str(aggregate_vector_path)
         tmp_reprojected_path = None
         if needs_reproject:
@@ -595,7 +595,10 @@ def fast_zonal_statistics(
         aggregate_layer.ResetReading()
         for feature in aggregate_layer:
             feature_id = feature.GetFID()
-            group_value = feature.GetField(aggregate_vector_field)
+            if aggregate_vector_field.lower() == "fid":
+                group_value = feature_id
+            else:
+                group_value = feature.GetField(aggregate_vector_field)
             feature_id_set.add(feature_id)
             feature_id_to_group_value[feature_id] = group_value
             unique_group_values.add(group_value)
@@ -841,7 +844,7 @@ def fast_zonal_statistics(
             lambda: dict(grouped_stats_working_template)
         )
 
-        for feature_id in feature_id_set:
+        for feature_id in sorted(feature_id_set):
             group_value = feature_id_to_group_value[feature_id]
             feature_stats = feature_stats_by_id[feature_id]
             group_stats = grouped_stats[group_value]
@@ -1470,6 +1473,14 @@ def run_zonal_stats_job(
 
     if combined_dataframe is None:
         combined_dataframe = pd.DataFrame(columns=[agg_field])
+
+    if agg_field in combined_dataframe.columns:
+        combined_dataframe = combined_dataframe.sort_values(by=agg_field)
+
+        # Ensure agg_field (fid) is the first column for readability
+        cols = list(combined_dataframe.columns)
+        cols.insert(0, cols.pop(cols.index(agg_field)))
+        combined_dataframe = combined_dataframe[cols]
 
     output_csv = Path(output_csv)
     output_csv.parent.mkdir(parents=True, exist_ok=True)

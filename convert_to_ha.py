@@ -8,10 +8,10 @@ import traceback
 
 # --- CONFIGURATION ---
 SCRIPT_DIR = Path(__file__).parent
-INPUT_DIR = SCRIPT_DIR / "data" / "base_years"
+INPUT_DIR = SCRIPT_DIR / "data" / "2020_1992_chg"
 AREA_RASTER_PATH = SCRIPT_DIR / "data" / "esa_pixel_area_ha_md5_1dd3298a7c4d25c891a11e01868b5db6.tif"
-OUTPUT_DIR = SCRIPT_DIR / "data" / "base_years_ha"
-EXCLUDE_PATTERNS = ["nature_access"]
+OUTPUT_DIR = SCRIPT_DIR / "data" / "2020_1992_chg_ha"
+EXCLUDE_PATTERNS = ["nature_access"]  # Add any patterns to exclude specific rasters
 
 # Create output directory if it doesn't exist
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -29,6 +29,10 @@ def process_single_raster(service_path):
                 'bigtiff': 'YES'
             })
             
+            # Fix for RasterBlockError: Remove source block sizes if they are not multiples of 16
+            profile.pop('blockxsize', None)
+            profile.pop('blockysize', None)
+
             # Handle Nodata value
             src_nodata = src_service.nodata
             print(f"  -> Detected NoData value: {src_nodata}")

@@ -2,6 +2,15 @@
 
 This file tracks the work done on the `zonal_stats_toolkit` project.
 
+## 2026-03-13
+
+*   **Pipeline Validation Framework:** Developed `compare_gpkg_columns.py` to perform statistical cross-validation between "Legacy" (CSV) and "Optimized" (GPKG) pipeline outputs.
+    *   Added logic to handle GeoPackages where the Feature ID (`fid`) is stored in the internal index rather than as an explicit column.
+    *   Implemented Normalized RMSE (NRMSE) metrics to quantify the fidelity of the new pipeline relative to the baseline.
+*   **Runner Determinism:** Updated `runner.py` to enforce explicit sorting of the output dataframe by the aggregation field (e.g., `fid`).
+    *   This ensures deterministic row ordering, which is critical for aligning non-spatial CSV outputs with spatial vectors.
+    *   Modified the output structure to ensure the aggregation field is always the first column in the CSV for improved readability.
+
 ## 2026-03-09
 
 *   **Raster Conversion Overhaul:** Refactored `convert_to_ha.py` to resolve critical performance and stability issues when processing large global rasters.
