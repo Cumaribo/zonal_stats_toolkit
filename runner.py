@@ -154,6 +154,8 @@ def parse_and_validate_config(cfg_path: Path) -> dict:
         section_lower = section_clean.lower()
         if section_lower == "project":
             continue
+        if section_lower.startswith("skip:"):
+            continue
         if section_lower.startswith("job:"):
             tag = section_clean.split(":", 1)[1].strip()
             if not tag:

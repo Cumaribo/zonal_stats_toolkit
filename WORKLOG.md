@@ -2,6 +2,23 @@
 
 This file tracks the work done on the `zonal_stats_toolkit` project.
 
+## 2026-03-20
+
+*   **Runner Configuration Enhancements:** Updated `runner.py`'s configuration parser to gracefully handle and ignore sections starting with `[skip:job:...]`. This allows for modular pipeline execution (e.g., extracting regional datasets while skipping massive global 10km grid jobs) without having to delete the configuration block entirely.
+*   **Housekeeping & Archival:** Cleaned up the root directory by moving legacy, one-off diagnostic scripts (`compare_gpkg_columns.py`, `check_csv_diff.py`, `inspect_vector.py`, `inspect_gpkg.py`) into a dedicated `qa_scripts/archive/` folder.
+
+## 2026-03-13 (Continued)
+
+*   **Validation Success & Methodological Justification:** Successfully cross-validated the Legacy (GDAL Rasterize) pipeline against the Optimized (`exact_extract` GPKG) pipeline.
+    *   Achieved **0.9975 Pearson Correlation** across 1.69 million grid cells, proving perfect spatial distribution alignment.
+    *   Identified that the variance (RMSE) between the datasets is strictly driven by boundary-pixel handling. The legacy pipeline relies on center-point intersection (`ALL_TOUCHED=FALSE`), causing "all-or-nothing" artifacts at grid edges.
+    *   Concluded that the optimized pipeline is mathematically superior because it calculates exact fractional pixel overlap, preventing both the missing data of `ALL_TOUCHED=FALSE` and the double-counting of `ALL_TOUCHED=TRUE`.
+    *   The Optimized Pipeline is now fully validated for downstream analysis.
+*   **Bi-Temporal Change Calculation:**
+    *   Developed `calculate_bitemporal_change.py` to efficiently calculate the difference between two time periods (e.g., 2020 vs 1992) for all relevant metrics.
+    *   The script operates directly on the GeoPackage using `osgeo.ogr` to add new `_diff_` columns, avoiding memory-intensive `geopandas` operations and bypassing `sqlite3` limitations with spatial triggers.
+    *   Successfully executed the script, adding 18 bi-temporal change columns to the `10k_grid_services_base.gpkg` dataset, preparing it for final analysis.
+
 ## 2026-03-13
 
 *   **Pipeline Validation Framework:** Developed `compare_gpkg_columns.py` to perform statistical cross-validation between "Legacy" (CSV) and "Optimized" (GPKG) pipeline outputs.

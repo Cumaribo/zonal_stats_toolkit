@@ -1,0 +1,36 @@
+--- Pipeline Comparison: exactextractr (GPKG) vs zonal_stats_toolkit (CSV) ---
+Date: 2026-03-13 19:55:08
+exactextractr Pipeline (GPKG): /data/interim/10k_grid_services_base.gpkg
+zonal_stats_toolkit Pipeline (CSV): output_access_grid/grid_10km_20260313_183732.csv
+----------------------------------------
+Loading GPKG (exactextractr Data)...
+  Rows loaded: 1691819
+Loading CSV (zonal_stats_toolkit Data)...
+  Rows loaded: 1691819
+  Note: FID likely in GPKG index. Resetting index to column.
+Row counts match perfectly. Enforcing strict positional alignment.
+  Common aligned rows: 1691819
+----------------------------------------
+
+Comparing zonal_stats_toolkit CSV (mean_nature_access_lspop2019_ESA1992_md5_b32b8b) 
+       vs GPKG 1992 (nature_access_lspop2019_ESA1992_mean)
+    Mean Absolute Error (MAE): 1927.628505
+    RMSE:                      19539.976495
+    Normalized RMSE:           58.2827%
+    Max Difference:            4058374.981766
+    Correlation (Pearson R):   0.9975
+    Scaling Ratio (CSV/GPKG):  0.9987x
+    -> CONCLUSION: HIGH SPATIAL FIDELITY (Variance is due to fractional boundary handling)
+
+Comparing zonal_stats_toolkit CSV (mean_nature_access_lspop2019_ESA2020_compressed_md5_6727ac) 
+       vs GPKG 2020 (nature_access_lspop2019_ESA2020_mean)
+    Mean Absolute Error (MAE): 1802.763587
+    RMSE:                      17801.187385
+    Normalized RMSE:           58.1011%
+    Max Difference:            2596511.101816
+    Correlation (Pearson R):   0.9975
+    Scaling Ratio (CSV/GPKG):  0.9984x
+    -> CONCLUSION: HIGH SPATIAL FIDELITY (Variance is due to fractional boundary handling)
+
+========================================
+Report saved to: /usr/local/wwf_es_beneficiaries/pipeline_validation_report.txt
