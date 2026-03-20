@@ -1,0 +1,1 @@
+This folder contains one-off scripts used to cross-validate the R pipeline against the Python pipeline, and to inspect GPKG geometries. They are kept for historical record but are not part of the active production pipeline.
