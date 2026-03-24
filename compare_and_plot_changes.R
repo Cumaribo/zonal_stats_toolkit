@@ -116,8 +116,14 @@ for (grp in groups) {
     
   df_long <- df_long %>% left_join(df_base_long, by = c(grp_col, "service"))
 
-  # Filter out N_retention globally so it is removed from all plots
-  df_long <- df_long %>% filter(service != "N_retention")
+  # Filter out N_retention and USLE globally so they are removed from all plots
+  df_long <- df_long %>% filter(!(service %in% c("N_retention", "USLE")))
+
+  # Enforce canonical order for facets (8 services, leaving bottom-right empty in a 3x3 grid)
+  canonical_order <- c("C_Risk", "N_export", "Sed_export",
+                       "C_Risk_Red_Ratio", "N_Ret_Ratio", "Sed_Ret_Ratio",
+                       "Pollination", "Nature_Access")
+  df_long$service <- factor(df_long$service, levels = canonical_order)
 
   if (grp == "biome") {
     df_long <- df_long %>% filter(!(!!sym(grp_col) %in% c("Lakes", "Rock & Ice")))
@@ -125,6 +131,9 @@ for (grp in groups) {
   if (grp == "region_wb") {
     df_long <- df_long %>% filter(!!sym(grp_col) != "Antarctica")
   }
+  
+  # Export the fully aligned data for map generation before filtering
+  write_csv(df_long, file.path(out_dir, paste0(grp, "_map_data.csv")))
 
   # Filter logic: Top/Bottom 5 for countries, all for others
   if (grp == "country") {
@@ -162,8 +171,17 @@ for (grp in groups) {
     x_var <- grp_col
   }
   
+  # Calculate global weighted averages per service for the reference lines
+  df_global_avg <- df_long %>%
+    group_by(service) %>%
+    summarise(
+      global_avg_abs = sum(mean_val * valid_count, na.rm = TRUE) / sum(valid_count, na.rm = TRUE),
+      global_avg_pct = sum(sym_pct_change * valid_count, na.rm = TRUE) / sum(valid_count, na.rm = TRUE)
+    )
+
   # Generate Faceted Plot
   p_abs <- ggplot(df_plot_abs, aes(x = !!sym(x_var), y = mean_val, fill = mean_val > 0)) +
+    geom_hline(data = df_global_avg, aes(yintercept = global_avg_abs), linetype = "dashed", color = "gray20", linewidth = 0.6, alpha = 0.8) +
     geom_col() +
     geom_linerange(aes(ymin = mean_val - se_val, ymax = mean_val + se_val), alpha = 0.5, linewidth = 0.6) +
     coord_flip() +
@@ -182,6 +200,7 @@ for (grp in groups) {
 
   # Generate Faceted Plot PCT
   p_pct <- ggplot(df_plot_pct, aes(x = !!sym(x_var), y = sym_pct_change, fill = sym_pct_change > 0)) +
+    geom_hline(data = df_global_avg, aes(yintercept = global_avg_pct), linetype = "dashed", color = "gray20", linewidth = 0.6, alpha = 0.8) +
     geom_col() +
     coord_flip() +
     facet_wrap(~ service, scales = facet_scales, ncol = 3) +
