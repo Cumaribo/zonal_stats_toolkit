@@ -2,6 +2,13 @@
 
 This file tracks the work done on the `zonal_stats_toolkit` project.
 
+## 2026-03-24
+
+*   **Visualization Refactor:** Overhauled `compare_and_plot_changes.R` to generate consolidated, faceted bitemporal difference plots for both Absolute Change and Symmetric Percentage Change.
+*   **Variance & Micro-state Handling:** Implemented Standard Error of the Mean (SEM) for error bars instead of raw standard deviation to tighten confidence intervals. Added dynamic filtering to exclude the bottom 10% of countries by `valid_count` to prevent tiny micro-states and islands from skewing the "top 5 / bottom 5" rankings due to extreme pixel variance. Excluded irrelevant regions (Antarctica, Lakes, Rock & Ice).
+*   **Methodological Finding (Pollination Discrepancy):** Investigated a divergence where the difference of the means ($\text{Mean}_{2020} - \text{Mean}_{1992}$) did not perfectly match the mean of the differences ($\text{Mean}_{\Delta}$) for Pollination. Concluded this is a **NoData Mask Misalignment** caused by shifting agricultural footprints. Because Pollination is only calculated on agricultural pixels, land-use changes between 1992 and 2020 alter the total valid area (the denominator) independently in each year, creating a natural mathematical divergence from pixel-by-pixel difference rasters. This behavior is expected and should be noted in the methodology.
+*   **Data Backfilling:** Discovered `n_retention_ratio` and `sed_retention_ratio` were absent from the base year consolidated CSVs. Developed a lightweight `missing_ratios_base.ini` and a python script `append_ratios.py` to calculate strictly the missing metrics and safely left-join them into the existing master CSVs, avoiding a massive, multi-day pipeline rerun.
+
 ## 2026-03-20
 
 *   **Runner Configuration Enhancements:** Updated `runner.py`'s configuration parser to gracefully handle and ignore sections starting with `[skip:job:...]`. This allows for modular pipeline execution (e.g., extracting regional datasets while skipping massive global 10km grid jobs) without having to delete the configuration block entirely.
