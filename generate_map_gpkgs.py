@@ -3,7 +3,7 @@ import geopandas as gpd
 import pandas as pd
 
 def create_map_gpkgs():
-    out_dir = "output_maps"
+    out_dir = "/home/jeronimo/data/global_ncp/processed/output_maps"
     os.makedirs(out_dir, exist_ok=True)
     
     groupings = {
@@ -50,6 +50,8 @@ def create_map_gpkgs():
         gdf_merged = gdf_dissolved.merge(df_wide, on=config['field'], how='left')
         
         out_file = os.path.join(out_dir, f"{grp}_change_map.gpkg")
+        if os.path.exists(out_file):
+            os.remove(out_file)
         print(f"  Saving to {out_file}...")
         gdf_merged.to_file(out_file, driver="GPKG")
         print(f"  Done with {grp}.\n")

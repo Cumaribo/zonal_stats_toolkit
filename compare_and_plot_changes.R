@@ -18,6 +18,29 @@ dir.create(out_dir, showWarnings = FALSE)
 
 groups <- c("country", "region_wb", "income_grp", "biome")
 
+# Universal Palettes for Regional Groupings
+group_palettes <- list(
+  biome = c(
+    'Tropical & Subtropical Moist Broadleaf Forests' = '#319D00',
+    'Tropical & Subtropical Dry Broadleaf Forests' = '#7ABD1B',
+    'Tropical & Subtropical Coniferous Forests' = '#556E19',
+    'Temperate Broadleaf & Mixed Forests' = '#207433',
+    'Temperate Coniferous Forests' = '#3E8D62',
+    'Boreal Forests/Taiga' = '#496FF3',
+    'Tropical & Subtropical Grasslands, Savannas & Shrublands' = '#D6F392',
+    'Temperate Grasslands, Savannas & Shrublands' = '#D1E614',
+    'Flooded Grasslands & Savannas' = '#75D0D5',
+    'Montane Grasslands & Shrublands' = '#98E600',
+    'Tundra' = '#C7DEFF',
+    'Mediterranean Forests, Woodlands & Scrub' = '#AF963C',
+    'Deserts & Xeric Shrublands' = '#C55C5C',
+    'Mangroves' = '#FE04BC'
+  ),
+  income_grp = c('1. High income: OECD' = '#004D33', '2. High income: nonOECD' = '#1d7355', '3. Upper middle income' = '#4b9e80', '4. Lower middle income' = '#8bc5af', '5. Low income' = '#cde9df'),
+  region_wb = c('East Asia & Pacific' = '#2E5A88', 'Europe & Central Asia' = '#D86018', 'Latin America & Caribbean' = '#7A3F91', 'Middle East & North Africa' = '#B38F00', 'North America' = '#1D8A99', 'South Asia' = '#6B8E23', 'Sub-Saharan Africa' = '#8B0000')
+)
+group_palettes$WWF_biome <- group_palettes$biome
+
 # Helper to find latest file for a given group
 get_latest_file <- function(d, g) {
   files <- list.files(d, pattern = paste0("^", g, ".*\\.csv$"), full.names = TRUE)
@@ -114,7 +137,23 @@ for (grp in groups) {
     filter(!is.na(!!sym(grp_col))) %>%
     select(all_of(grp_col), service, sym_pct_change)
     
-  df_long <- df_long %>% left_join(df_base_long, by = c(grp_col, "service"))
+  df_long <- df_long %>% left_join(df_base_long, by = c(grp_col, "service")) %>%
+    mutate(
+      status_abs = case_when(
+        service %in% c("Nature_Access","Pollination","N_Ret_Ratio","Sed_Ret_Ratio","C_Risk_Red_Ratio") & mean_val > 0 ~ "Good",
+        service %in% c("Nature_Access","Pollination","N_Ret_Ratio","Sed_Ret_Ratio","C_Risk_Red_Ratio") & mean_val < 0 ~ "Bad",
+        service %in% c("Sed_export","N_export","C_Risk") & mean_val < 0 ~ "Good",
+        service %in% c("Sed_export","N_export","C_Risk") & mean_val > 0 ~ "Bad",
+        TRUE ~ "Neutral"
+      ),
+      status_pct = case_when(
+        service %in% c("Nature_Access","Pollination","N_Ret_Ratio","Sed_Ret_Ratio","C_Risk_Red_Ratio") & sym_pct_change > 0 ~ "Good",
+        service %in% c("Nature_Access","Pollination","N_Ret_Ratio","Sed_Ret_Ratio","C_Risk_Red_Ratio") & sym_pct_change < 0 ~ "Bad",
+        service %in% c("Sed_export","N_export","C_Risk") & sym_pct_change < 0 ~ "Good",
+        service %in% c("Sed_export","N_export","C_Risk") & sym_pct_change > 0 ~ "Bad",
+        TRUE ~ "Neutral"
+      )
+    )
 
   # Filter out N_retention and USLE globally so they are removed from all plots
   df_long <- df_long %>% filter(!(service %in% c("N_retention", "USLE")))
@@ -179,41 +218,55 @@ for (grp in groups) {
       global_avg_pct = sum(sym_pct_change * valid_count, na.rm = TRUE) / sum(valid_count, na.rm = TRUE)
     )
 
-  # Generate Faceted Plot
-  p_abs <- ggplot(df_plot_abs, aes(x = !!sym(x_var), y = mean_val, fill = mean_val > 0)) +
+  custom_palette <- group_palettes[[grp]]
+  legend_cols <- if (grp == "country") 8 else 4
+
+  # Unified plot formatting for all groups
+  p_abs <- ggplot(df_plot_abs, aes(x = .data[[x_var]], y = mean_val, fill = .data[[grp_col]])) +
     geom_col() +
     geom_linerange(aes(ymin = mean_val - se_val, ymax = mean_val + se_val), alpha = 0.5, linewidth = 0.6) +
     geom_hline(data = df_global_avg, aes(yintercept = global_avg_abs), linetype = "dashed", color = "gray20", linewidth = 0.6, alpha = 0.8) +
     coord_flip() +
     facet_wrap(~ service, scales = facet_scales, ncol = 3) +
-    scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "tomato")) +
     scale_x_discrete(labels = function(x) gsub("__.*$", "", x)) +
     labs(title = paste("Absolute Change by", grp), 
          subtitle = if(grp == "country") "Top 5 & Bottom 5 (Bottom 10% by valid area excluded)" else "All records",
          x = NULL, 
          y = "Absolute Difference (2020-1992)") +
     theme_minimal(base_size = 13) + 
-    theme(legend.position = "none",
-          strip.text = element_text(face = "bold", size = 14))
+    theme(axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.position = "bottom",
+          legend.title = element_blank(),
+          legend.text = element_text(size = 8),
+          strip.text = element_text(face = "bold", size = 14)) +
+    guides(fill = guide_legend(ncol = legend_cols))
           
-  ggsave(file.path(out_dir, paste0(grp, "_faceted_abs_change.png")), p_abs, width = 14, height = 10, bg="white")
-
-  # Generate Faceted Plot PCT
-  p_pct <- ggplot(df_plot_pct, aes(x = !!sym(x_var), y = sym_pct_change, fill = sym_pct_change > 0)) +
+  p_pct <- ggplot(df_plot_pct, aes(x = .data[[x_var]], y = sym_pct_change, fill = .data[[grp_col]])) +
     geom_col() +
     geom_hline(data = df_global_avg, aes(yintercept = global_avg_pct), linetype = "dashed", color = "gray20", linewidth = 0.6, alpha = 0.8) +
     coord_flip() +
     facet_wrap(~ service, scales = facet_scales, ncol = 3) +
-    scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "tomato")) +
     scale_x_discrete(labels = function(x) gsub("__.*$", "", x)) +
     labs(title = paste("Symmetric % Change by", grp), 
          subtitle = if(grp == "country") "Top 5 & Bottom 5 (Bottom 10% by valid area excluded)" else "All records",
          x = NULL, 
          y = "Symmetric % Change (2020-1992)") +
     theme_minimal(base_size = 13) + 
-    theme(legend.position = "none",
-          strip.text = element_text(face = "bold", size = 14))
-          
+    theme(axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.position = "bottom",
+          legend.title = element_blank(),
+          legend.text = element_text(size = 8),
+          strip.text = element_text(face = "bold", size = 14)) +
+    guides(fill = guide_legend(ncol = legend_cols))
+
+  if (!is.null(custom_palette)) {
+    p_abs <- p_abs + scale_fill_manual(values = custom_palette, na.value = "gray50")
+    p_pct <- p_pct + scale_fill_manual(values = custom_palette, na.value = "gray50")
+  }
+
+  ggsave(file.path(out_dir, paste0(grp, "_faceted_abs_change.png")), p_abs, width = 14, height = 10, bg="white")
   ggsave(file.path(out_dir, paste0(grp, "_faceted_pct_change.png")), p_pct, width = 14, height = 10, bg="white")
 }
 
