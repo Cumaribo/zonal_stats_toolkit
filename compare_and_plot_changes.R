@@ -60,6 +60,17 @@ biome_labels <- c(
   'Mangroves' = 'Mangroves'
 )
 
+# Helper to get short name for dense legends
+get_short_name <- function(g, grp_name) {
+  g <- as.character(g)
+  if (grp_name == "biome") {
+    res <- biome_labels[g]
+    unname(ifelse(is.na(res), g, res))
+  } else {
+    g
+  }
+}
+
 # Helper to find latest file for a given group
 get_latest_file <- function(d, g) {
   files <- list.files(d, pattern = paste0("^", g, ".*\\.csv$"), full.names = TRUE)
@@ -190,6 +201,21 @@ for (grp in groups) {
     df_long <- df_long %>% filter(!!sym(grp_col) != "Antarctica")
   }
   
+  # Generate numerical identifiers for clear legend tracking
+  unique_groups <- sort(unique(df_long[[grp_col]]))
+  group_id_map <- setNames(seq_along(unique_groups), unique_groups)
+  
+  # We order the factor levels Z->A so that when reverse=TRUE is applied in the legend,
+  # it reads 1, 2, 3... top-to-bottom.
+  unique_groups_desc <- sort(unique(df_long[[grp_col]]), decreasing = TRUE)
+  legend_levels <- paste0("[", group_id_map[unique_groups_desc], "] ", get_short_name(unique_groups_desc, grp))
+  
+  df_long <- df_long %>%
+    mutate(
+      grp_num_id = as.character(group_id_map[!!sym(grp_col)]),
+      grp_legend_label = factor(paste0("[", grp_num_id, "] ", get_short_name(!!sym(grp_col), grp)), levels = legend_levels)
+    )
+
   # Export the fully aligned data for map generation before filtering
   write_csv(df_long, file.path(out_dir, paste0(grp, "_map_data.csv")))
 
@@ -248,12 +274,20 @@ for (grp in groups) {
   legend_cols <- if (grp == "country") 10 else if (grp == "biome") 5 else 4
   status_colors <- c("Good" = "#007930", "Bad" = "#E83737", "Neutral" = "gray70")
 
+  if (!is.null(custom_palette)) {
+    valid_keys <- intersect(names(custom_palette), unique_groups)
+    new_palette <- custom_palette[valid_keys]
+    names(new_palette) <- paste0("[", group_id_map[valid_keys], "] ", get_short_name(valid_keys, grp))
+    custom_palette <- new_palette
+  }
+
   # Unified plot formatting for all groups
   p_abs <- ggplot(df_plot_abs, aes(x = .data[[x_var]], y = mean_val)) +
     geom_col(aes(fill = status_abs)) +
     geom_linerange(aes(ymin = mean_val - se_val, ymax = mean_val + se_val), alpha = 0.5, linewidth = 0.6) +
     geom_hline(data = df_global_avg, aes(yintercept = global_avg_abs), linetype = "dashed", color = "gray20", linewidth = 0.6, alpha = 0.8) +
-    geom_point(aes(color = .data[[grp_col]]), y = -Inf, shape = 15, size = 3.5) +
+    geom_point(aes(color = grp_legend_label), y = -Inf, shape = 15, size = 0, alpha = 0) +
+    geom_text(aes(label = grp_num_id), color = "black", y = -Inf, hjust = 1.5, size = 3, fontface = "bold", show.legend = FALSE) +
     coord_flip(clip = "off") +
     facet_wrap(~ service, scales = facet_scales, ncol = 3) +
     scale_x_discrete(labels = function(x) gsub("__.*$", "", x)) +
@@ -266,12 +300,14 @@ for (grp in groups) {
     theme(axis.text.y = element_blank(),
           axis.ticks.y = element_blank(),
           plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
-          strip.text = element_text(face = "bold", size = 14))
+          strip.text = element_text(face = "bold", size = 14),
+          plot.margin = margin(l = 30))
           
   p_pct <- ggplot(df_plot_pct, aes(x = .data[[x_var]], y = sym_pct_change)) +
     geom_col(aes(fill = status_pct)) +
     geom_hline(data = df_global_avg, aes(yintercept = global_avg_pct), linetype = "dashed", color = "gray20", linewidth = 0.6, alpha = 0.8) +
-    geom_point(aes(color = .data[[grp_col]]), y = -Inf, shape = 15, size = 3.5) +
+    geom_point(aes(color = grp_legend_label), y = -Inf, shape = 15, size = 0, alpha = 0) +
+    geom_text(aes(label = grp_num_id), color = "black", y = -Inf, hjust = 1.5, size = 3, fontface = "bold", show.legend = FALSE) +
     coord_flip(clip = "off") +
     facet_wrap(~ service, scales = facet_scales, ncol = 3) +
     scale_x_discrete(labels = function(x) gsub("__.*$", "", x)) +
@@ -284,19 +320,15 @@ for (grp in groups) {
     theme(axis.text.y = element_blank(),
           axis.ticks.y = element_blank(),
           plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
-          strip.text = element_text(face = "bold", size = 14))
+          strip.text = element_text(face = "bold", size = 14),
+          plot.margin = margin(l = 30))
 
   p_abs <- p_abs + scale_fill_manual(values = status_colors, guide = "none")
   p_pct <- p_pct + scale_fill_manual(values = status_colors, guide = "none")
 
   if (!is.null(custom_palette)) {
-    if (grp == "biome") {
-      p_abs <- p_abs + scale_color_manual(values = custom_palette, labels = biome_labels, na.value = "gray50", name = NULL)
-      p_pct <- p_pct + scale_color_manual(values = custom_palette, labels = biome_labels, na.value = "gray50", name = NULL)
-    } else {
-      p_abs <- p_abs + scale_color_manual(values = custom_palette, na.value = "gray50", name = NULL)
-      p_pct <- p_pct + scale_color_manual(values = custom_palette, na.value = "gray50", name = NULL)
-    }
+    p_abs <- p_abs + scale_color_manual(values = custom_palette, na.value = "gray50", name = NULL)
+    p_pct <- p_pct + scale_color_manual(values = custom_palette, na.value = "gray50", name = NULL)
   } else {
     p_abs <- p_abs + scale_color_discrete(name = NULL)
     p_pct <- p_pct + scale_color_discrete(name = NULL)
@@ -311,7 +343,7 @@ for (grp in groups) {
           legend.title = element_blank(),
           legend.text = element_text(size = 8),
           legend.key.size = unit(0.3, "cm")) &
-    guides(color = guide_legend(ncol = legend_cols, override.aes = list(size = 4), reverse = TRUE))
+    guides(color = guide_legend(ncol = legend_cols, override.aes = list(size = 4, alpha = 1), reverse = TRUE))
 
   ggsave(file.path(out_dir, paste0(grp, "_combined_diffs.png")), combined_plot, width = 16, height = 9, bg="white", dpi=300)
 }
