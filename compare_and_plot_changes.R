@@ -245,14 +245,16 @@ for (grp in groups) {
   )
 
   custom_palette <- group_palettes[[grp]]
-  legend_cols <- if (grp == "country") 8 else if (grp == "biome") 3 else 4
+  legend_cols <- if (grp == "country") 10 else if (grp == "biome") 5 else 4
+  status_colors <- c("Good" = "#007930", "Bad" = "#E83737", "Neutral" = "gray70")
 
   # Unified plot formatting for all groups
-  p_abs <- ggplot(df_plot_abs, aes(x = .data[[x_var]], y = mean_val, fill = .data[[grp_col]])) +
-    geom_col() +
+  p_abs <- ggplot(df_plot_abs, aes(x = .data[[x_var]], y = mean_val)) +
+    geom_col(aes(fill = status_abs)) +
     geom_linerange(aes(ymin = mean_val - se_val, ymax = mean_val + se_val), alpha = 0.5, linewidth = 0.6) +
     geom_hline(data = df_global_avg, aes(yintercept = global_avg_abs), linetype = "dashed", color = "gray20", linewidth = 0.6, alpha = 0.8) +
-    coord_flip() +
+    geom_point(aes(color = .data[[grp_col]]), y = -Inf, shape = 15, size = 3.5) +
+    coord_flip(clip = "off") +
     facet_wrap(~ service, scales = facet_scales, ncol = 3) +
     scale_x_discrete(labels = function(x) gsub("__.*$", "", x)) +
     labs(title = "Absolute Change", 
@@ -266,10 +268,11 @@ for (grp in groups) {
           plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
           strip.text = element_text(face = "bold", size = 14))
           
-  p_pct <- ggplot(df_plot_pct, aes(x = .data[[x_var]], y = sym_pct_change, fill = .data[[grp_col]])) +
-    geom_col() +
+  p_pct <- ggplot(df_plot_pct, aes(x = .data[[x_var]], y = sym_pct_change)) +
+    geom_col(aes(fill = status_pct)) +
     geom_hline(data = df_global_avg, aes(yintercept = global_avg_pct), linetype = "dashed", color = "gray20", linewidth = 0.6, alpha = 0.8) +
-    coord_flip() +
+    geom_point(aes(color = .data[[grp_col]]), y = -Inf, shape = 15, size = 3.5) +
+    coord_flip(clip = "off") +
     facet_wrap(~ service, scales = facet_scales, ncol = 3) +
     scale_x_discrete(labels = function(x) gsub("__.*$", "", x)) +
     labs(title = "Percentage Change (%)", 
@@ -283,14 +286,20 @@ for (grp in groups) {
           plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
           strip.text = element_text(face = "bold", size = 14))
 
+  p_abs <- p_abs + scale_fill_manual(values = status_colors, guide = "none")
+  p_pct <- p_pct + scale_fill_manual(values = status_colors, guide = "none")
+
   if (!is.null(custom_palette)) {
     if (grp == "biome") {
-      p_abs <- p_abs + scale_fill_manual(values = custom_palette, labels = biome_labels, na.value = "gray50", name = NULL)
-      p_pct <- p_pct + scale_fill_manual(values = custom_palette, labels = biome_labels, na.value = "gray50", name = NULL)
+      p_abs <- p_abs + scale_color_manual(values = custom_palette, labels = biome_labels, na.value = "gray50", name = NULL)
+      p_pct <- p_pct + scale_color_manual(values = custom_palette, labels = biome_labels, na.value = "gray50", name = NULL)
     } else {
-      p_abs <- p_abs + scale_fill_manual(values = custom_palette, na.value = "gray50", name = NULL)
-      p_pct <- p_pct + scale_fill_manual(values = custom_palette, na.value = "gray50", name = NULL)
+      p_abs <- p_abs + scale_color_manual(values = custom_palette, na.value = "gray50", name = NULL)
+      p_pct <- p_pct + scale_color_manual(values = custom_palette, na.value = "gray50", name = NULL)
     }
+  } else {
+    p_abs <- p_abs + scale_color_discrete(name = NULL)
+    p_pct <- p_pct + scale_color_discrete(name = NULL)
   }
 
   # Stitch them together side-by-side using Patchwork
@@ -302,7 +311,7 @@ for (grp in groups) {
           legend.title = element_blank(),
           legend.text = element_text(size = 8),
           legend.key.size = unit(0.3, "cm")) &
-    guides(fill = guide_legend(ncol = legend_cols))
+    guides(color = guide_legend(ncol = legend_cols, override.aes = list(size = 4)))
 
   ggsave(file.path(out_dir, paste0(grp, "_combined_diffs.png")), combined_plot, width = 16, height = 9, bg="white", dpi=300)
 }
