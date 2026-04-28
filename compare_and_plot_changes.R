@@ -311,7 +311,7 @@ for (grp in groups) {
           legend.title = element_blank(),
           legend.text = element_text(size = 8),
           legend.key.size = unit(0.3, "cm")) &
-    guides(color = guide_legend(ncol = legend_cols, override.aes = list(size = 4)))
+    guides(color = guide_legend(ncol = legend_cols, override.aes = list(size = 4), reverse = TRUE))
 
   ggsave(file.path(out_dir, paste0(grp, "_combined_diffs.png")), combined_plot, width = 16, height = 9, bg="white", dpi=300)
 }
