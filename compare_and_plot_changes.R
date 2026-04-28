@@ -7,6 +7,7 @@ library(readr)
 library(stringr)
 library(tidyr)
 library(ggplot2)
+library(patchwork)
 
 # --- 1. CONFIGURATION ---
 dir_diff <- "output_diff_consolidated"
@@ -40,6 +41,24 @@ group_palettes <- list(
   region_wb = c('East Asia & Pacific' = '#2E5A88', 'Europe & Central Asia' = '#D86018', 'Latin America & Caribbean' = '#7A3F91', 'Middle East & North Africa' = '#B38F00', 'North America' = '#1D8A99', 'South Asia' = '#6B8E23', 'Sub-Saharan Africa' = '#8B0000')
 )
 group_palettes$WWF_biome <- group_palettes$biome
+
+# Short-name labels specifically for the dense Biome legend
+biome_labels <- c(
+  'Tropical & Subtropical Moist Broadleaf Forests' = 'Trop/Subtrop Moist Broadleaf',
+  'Tropical & Subtropical Dry Broadleaf Forests' = 'Trop/Subtrop Dry Broadleaf',
+  'Tropical & Subtropical Coniferous Forests' = 'Trop/Subtrop Coniferous',
+  'Temperate Broadleaf & Mixed Forests' = 'Temp Broadleaf/Mixed',
+  'Temperate Coniferous Forests' = 'Temp Coniferous',
+  'Boreal Forests/Taiga' = 'Boreal/Taiga',
+  'Tropical & Subtropical Grasslands, Savannas & Shrublands' = 'Trop/Subtrop Grass/Sav/Shrub',
+  'Temperate Grasslands, Savannas & Shrublands' = 'Temp Grass/Sav/Shrub',
+  'Flooded Grasslands & Savannas' = 'Flooded Grass/Savannas',
+  'Montane Grasslands & Shrublands' = 'Montane Grass/Shrub',
+  'Tundra' = 'Tundra',
+  'Mediterranean Forests, Woodlands & Scrub' = 'Mediterranean',
+  'Deserts & Xeric Shrublands' = 'Deserts & Xeric Shrub',
+  'Mangroves' = 'Mangroves'
+)
 
 # Helper to find latest file for a given group
 get_latest_file <- function(d, g) {
@@ -219,7 +238,7 @@ for (grp in groups) {
     )
 
   custom_palette <- group_palettes[[grp]]
-  legend_cols <- if (grp == "country") 8 else 4
+  legend_cols <- if (grp == "country") 8 else if (grp == "biome") 3 else 4
 
   # Unified plot formatting for all groups
   p_abs <- ggplot(df_plot_abs, aes(x = .data[[x_var]], y = mean_val, fill = .data[[grp_col]])) +
@@ -229,18 +248,16 @@ for (grp in groups) {
     coord_flip() +
     facet_wrap(~ service, scales = facet_scales, ncol = 3) +
     scale_x_discrete(labels = function(x) gsub("__.*$", "", x)) +
-    labs(title = paste("Absolute Change by", grp), 
-         subtitle = if(grp == "country") "Top 5 & Bottom 5 (Bottom 10% by valid area excluded)" else "All records",
+    labs(title = "Absolute Change", 
+         subtitle = NULL,
+         caption = NULL,
          x = NULL, 
          y = "Absolute Difference (2020-1992)") +
     theme_minimal(base_size = 13) + 
     theme(axis.text.y = element_blank(),
           axis.ticks.y = element_blank(),
-          legend.position = "bottom",
-          legend.title = element_blank(),
-          legend.text = element_text(size = 8),
-          strip.text = element_text(face = "bold", size = 14)) +
-    guides(fill = guide_legend(ncol = legend_cols))
+          plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+          strip.text = element_text(face = "bold", size = 14))
           
   p_pct <- ggplot(df_plot_pct, aes(x = .data[[x_var]], y = sym_pct_change, fill = .data[[grp_col]])) +
     geom_col() +
@@ -248,26 +265,37 @@ for (grp in groups) {
     coord_flip() +
     facet_wrap(~ service, scales = facet_scales, ncol = 3) +
     scale_x_discrete(labels = function(x) gsub("__.*$", "", x)) +
-    labs(title = paste("Symmetric % Change by", grp), 
-         subtitle = if(grp == "country") "Top 5 & Bottom 5 (Bottom 10% by valid area excluded)" else "All records",
+    labs(title = "Percentage Change (%)", 
+         subtitle = NULL,
+         caption = NULL,
          x = NULL, 
          y = "Symmetric % Change (2020-1992)") +
     theme_minimal(base_size = 13) + 
     theme(axis.text.y = element_blank(),
           axis.ticks.y = element_blank(),
-          legend.position = "bottom",
-          legend.title = element_blank(),
-          legend.text = element_text(size = 8),
-          strip.text = element_text(face = "bold", size = 14)) +
-    guides(fill = guide_legend(ncol = legend_cols))
+          plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+          strip.text = element_text(face = "bold", size = 14))
 
   if (!is.null(custom_palette)) {
-    p_abs <- p_abs + scale_fill_manual(values = custom_palette, na.value = "gray50")
-    p_pct <- p_pct + scale_fill_manual(values = custom_palette, na.value = "gray50")
+    if (grp == "biome") {
+      p_abs <- p_abs + scale_fill_manual(values = custom_palette, labels = biome_labels, na.value = "gray50", name = NULL)
+      p_pct <- p_pct + scale_fill_manual(values = custom_palette, labels = biome_labels, na.value = "gray50", name = NULL)
+    } else {
+      p_abs <- p_abs + scale_fill_manual(values = custom_palette, na.value = "gray50", name = NULL)
+      p_pct <- p_pct + scale_fill_manual(values = custom_palette, na.value = "gray50", name = NULL)
+    }
   }
 
-  ggsave(file.path(out_dir, paste0(grp, "_faceted_abs_change.png")), p_abs, width = 14, height = 10, bg="white")
-  ggsave(file.path(out_dir, paste0(grp, "_faceted_pct_change.png")), p_pct, width = 14, height = 10, bg="white")
+  # Stitch them together side-by-side using Patchwork
+  combined_plot <- (p_abs | p_pct) + 
+    plot_layout(guides = "collect") & 
+    theme(legend.position = "bottom",
+          legend.title = element_blank(),
+          legend.text = element_text(size = 8),
+          legend.key.size = unit(0.3, "cm")) &
+    guides(fill = guide_legend(ncol = legend_cols))
+
+  ggsave(file.path(out_dir, paste0(grp, "_combined_diffs.png")), combined_plot, width = 16, height = 9, bg="white", dpi=300)
 }
 
 message("\nAnalysis complete! Plots saved to ", out_dir)
