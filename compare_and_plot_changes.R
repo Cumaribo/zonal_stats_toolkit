@@ -237,6 +237,13 @@ for (grp in groups) {
       global_avg_pct = sum(sym_pct_change * valid_count, na.rm = TRUE) / sum(valid_count, na.rm = TRUE)
     )
 
+  grp_name <- switch(grp,
+    country = "Country",
+    region_wb = "World Bank Region",
+    income_grp = "Income Group",
+    biome = "Biome"
+  )
+
   custom_palette <- group_palettes[[grp]]
   legend_cols <- if (grp == "country") 8 else if (grp == "biome") 3 else 4
 
@@ -288,6 +295,8 @@ for (grp in groups) {
 
   # Stitch them together side-by-side using Patchwork
   combined_plot <- (p_abs | p_pct) + 
+    plot_annotation(title = grp_name,
+                    theme = theme(plot.title = element_text(size = 22, face = "bold", hjust = 0.5))) +
     plot_layout(guides = "collect") & 
     theme(legend.position = "bottom",
           legend.title = element_blank(),
