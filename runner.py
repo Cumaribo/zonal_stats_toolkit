@@ -1385,12 +1385,12 @@ def run_zonal_stats_job(
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
 
+    # 1. SCHEDULE ALL TASKS
+    # Schedule raster analysis tasks
     grouped_stats_list = []
     if base_raster_path_list:
-        raster_rows = []
         for base_raster_path in base_raster_path_list:
             base_raster_path = Path(base_raster_path)
-
             grouped_stats_task = task_graph.add_task(
                 func=fast_zonal_statistics,
                 args=((base_raster_path, 1), agg_vector, agg_field),
@@ -1402,16 +1402,17 @@ def run_zonal_stats_job(
                     "percentile_list": pct_list,
                 },
                 store_result=True,
+                task_name=f"zonal stats for {base_raster_path.name}",
             )
             grouped_stats_list.append(
                 (base_raster_path.stem, agg_field, grouped_stats_task)
             )
 
-    combined_dataframe = None
-
+    # Schedule vector analysis task
+    vector_task = None
+    vector_tmp_csv = None
     if base_vector_path_list:
         vector_tmp_csv = workdir / f"{tag}__vector_stats.csv"
-
         vector_task = task_graph.add_task(
             func=run_vector_stats_job,
             kwargs={
@@ -1430,48 +1431,54 @@ def run_zonal_stats_job(
             task_name=f"vector stats for {tag}",
             target_path_list=[vector_tmp_csv],
         )
-        vector_task.join()
 
+    # 2. WAIT FOR AND PROCESS RESULTS
+    combined_dataframe = None
+
+    # Process vector result first, if it exists
+    if vector_task:
+        vector_task.join()  # Wait for the vector CSV to be written
         vector_dataframe = pd.read_csv(vector_tmp_csv)
         if "base_vector" in vector_dataframe.columns:
             vector_dataframe = vector_dataframe.rename(
                 columns={"base_vector": "base"}
             )
-
         combined_dataframe = vector_dataframe
 
-    raster_dataframes = []
+    # Process raster results, if they exist
+    if grouped_stats_list:
+        raster_dataframes = []
+        for raster_stem, aggregation_field_name, group_task in grouped_stats_list:
+            grouped_stats = group_task.get()  # Wait for the in-memory result
+            raster_rows = []
+            for group_value, statistics in grouped_stats.items():
+                row = {aggregation_field_name: group_value}
+                for operation in core_ops:
+                    row[f"{operation}_{raster_stem}"] = statistics.get(operation)
+                for percentile_key in pct_keys:
+                    row[f"{percentile_key}_{raster_stem}"] = statistics.get(
+                        percentile_key
+                    )
+                raster_rows.append(row)
+            raster_dataframes.append(pd.DataFrame(raster_rows))
 
-    for raster_stem, aggregation_field_name, group_task in grouped_stats_list:
-        grouped_stats = group_task.get()
-
-        raster_rows = []
-        for group_value, statistics in grouped_stats.items():
-            row = {aggregation_field_name: group_value}
-            for operation in core_ops:
-                row[f"{operation}_{raster_stem}"] = statistics.get(operation)
-            for percentile_key in pct_keys:
-                row[f"{percentile_key}_{raster_stem}"] = statistics.get(
-                    percentile_key
+        # Merge all raster dataframes together
+        raster_dataframe = None
+        if raster_dataframes:
+            for raster_frame in raster_dataframes:
+                raster_dataframe = (
+                    raster_frame
+                    if raster_dataframe is None
+                    else raster_dataframe.merge(raster_frame, on=agg_field, how="outer")
                 )
-            raster_rows.append(row)
 
-        raster_dataframes.append(pd.DataFrame(raster_rows))
-
-    raster_dataframe = None
-    for raster_frame in raster_dataframes:
-        raster_dataframe = (
-            raster_frame
-            if raster_dataframe is None
-            else raster_dataframe.merge(raster_frame, on=agg_field, how="outer")
-        )
-
-    if combined_dataframe is None:
-        combined_dataframe = raster_dataframe
-    elif raster_dataframe is not None:
-        combined_dataframe = combined_dataframe.merge(
-            raster_dataframe, on=agg_field, how="outer"
-        )
+        # Merge raster results into the combined dataframe
+        if combined_dataframe is None:
+            combined_dataframe = raster_dataframe
+        elif raster_dataframe is not None:
+            combined_dataframe = combined_dataframe.merge(
+                raster_dataframe, on=agg_field, how="outer"
+            )
 
     if combined_dataframe is None:
         combined_dataframe = pd.DataFrame(columns=[agg_field])

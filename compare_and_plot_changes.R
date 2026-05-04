@@ -63,7 +63,7 @@ biome_labels <- c(
 # Helper to get short name for dense legends
 get_short_name <- function(g, grp_name) {
   g <- as.character(g)
-  if (grp_name == "biome") {
+  if (any(grp_name %in% c("WWF_biome", "biome"))) {
     res <- biome_labels[g]
     unname(ifelse(is.na(res), g, res))
   } else {
@@ -199,6 +199,9 @@ for (grp in groups) {
   }
   if (grp == "region_wb") {
     df_long <- df_long %>% filter(!!sym(grp_col) != "Antarctica")
+  }
+  if (grp == "income_grp") {
+    df_long <- df_long %>% filter(!!sym(grp_col) != "2. High income: nonOECD")
   }
   
   # Generate numerical identifiers for clear legend tracking
