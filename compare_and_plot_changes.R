@@ -275,11 +275,21 @@ for (grp in groups) {
 
   custom_palette <- group_palettes[[grp]]
   legend_cols <- if (grp == "country") 10 else if (grp == "biome") 5 else 4
-  status_colors <- c("Good" = "#007930", "Bad" = "#E83737", "Neutral" = "gray70")
+  # Colorblind-safe pair (Okabe-Ito-derived, WWF-brand-consistent): teal = improved,
+  # orange = declined. Avoids red/green, which is indistinguishable to the most common
+  # form of color vision deficiency.
+  status_colors <- c("Good" = "#009191", "Bad" = "#F07D00", "Neutral" = "gray70")
 
+  # This palette is used ONLY to give the numbered group labels (e.g. "[3] Sub-Saharan
+  # Africa") a legend key so readers can look up which bar is which region/country. It
+  # must NOT be a meaningful color-coded legend in its own right -- the bars' actual
+  # fill color already means something (status_colors, below), and having two
+  # differently-meaning color legends on the same chart is what caused the
+  # "legend doesn't match the bar" confusion. So every entry here uses the same
+  # neutral color; only the fill legend below carries color meaning.
   if (!is.null(custom_palette)) {
     valid_keys <- intersect(names(custom_palette), unique_groups)
-    new_palette <- custom_palette[valid_keys]
+    new_palette <- setNames(rep("gray30", length(valid_keys)), valid_keys)
     names(new_palette) <- paste0("[", group_id_map[valid_keys], "] ", get_short_name(valid_keys, grp))
     custom_palette <- new_palette
   }
@@ -326,8 +336,9 @@ for (grp in groups) {
           strip.text = element_text(face = "bold", size = 14),
           plot.margin = margin(l = 30))
 
-  p_abs <- p_abs + scale_fill_manual(values = status_colors, guide = "none")
-  p_pct <- p_pct + scale_fill_manual(values = status_colors, guide = "none")
+  status_labels <- c("Good" = "Improved", "Bad" = "Declined", "Neutral" = "No clear direction")
+  p_abs <- p_abs + scale_fill_manual(values = status_colors, labels = status_labels, name = "Change direction")
+  p_pct <- p_pct + scale_fill_manual(values = status_colors, labels = status_labels, name = "Change direction")
 
   if (!is.null(custom_palette)) {
     p_abs <- p_abs + scale_color_manual(values = custom_palette, na.value = "gray50", name = NULL)
@@ -341,9 +352,9 @@ for (grp in groups) {
   combined_plot <- (p_abs | p_pct) + 
     plot_annotation(title = grp_name,
                     theme = theme(plot.title = element_text(size = 22, face = "bold", hjust = 0.5))) +
-    plot_layout(guides = "collect") & 
+    plot_layout(guides = "collect") &
     theme(legend.position = "bottom",
-          legend.title = element_blank(),
+          legend.title = element_text(size = 9, face = "bold"),
           legend.text = element_text(size = 8),
           legend.key.size = unit(0.3, "cm")) &
     guides(color = guide_legend(ncol = legend_cols, override.aes = list(size = 4, alpha = 1), reverse = TRUE))
