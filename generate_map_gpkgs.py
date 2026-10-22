@@ -3,7 +3,7 @@ import geopandas as gpd
 import pandas as pd
 
 def create_map_gpkgs():
-    out_dir = "/home/jeronimo/data/global_ncp/processed/output_maps"
+    out_dir = "outputs/maps"
     os.makedirs(out_dir, exist_ok=True)
     
     groupings = {
@@ -26,7 +26,7 @@ def create_map_gpkgs():
     }
     
     for grp, config in groupings.items():
-        data_file = f"output_plots_diff/{grp}_map_data.csv"
+        data_file = f"outputs/plots/output_plots_diff/{grp}_map_data.csv"
         if not os.path.exists(data_file):
             print(f"Data file {data_file} not found. Skipping {grp}.")
             continue

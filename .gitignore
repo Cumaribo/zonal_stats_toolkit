@@ -6,3 +6,7 @@ workdir_coastal/
 workdir_raw/
 workdir_raw_fid/
 docker_config/
+outputs/maps/*.gpkg
+
+__pycache__/
+output_raw/
